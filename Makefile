@@ -1,4 +1,4 @@
-.PHONY: install db seed test lint chat serve
+.PHONY: install db seed test lint chat serve eval eval-oracle
 
 install:
 	uv sync
@@ -20,3 +20,9 @@ chat:
 
 serve:
 	uv run uvicorn evalgate.api:app --reload
+
+eval:
+	uv run evalgate eval --split train
+
+eval-oracle:
+	uv run evalgate eval --oracle --split all --concurrency 16

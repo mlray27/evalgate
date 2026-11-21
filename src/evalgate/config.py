@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EVALGATE_", env_file=".env", extra="ignore")
 
-    llm_base_url: str = "https://api.together.xyz/v1"
+    llm_base_url: str = "https://api.together.ai/v1"
     llm_api_key: str = ""
     llm_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
     llm_temperature: float = 0.2
@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     proposal_ttl_turns: int = 6
 
     trace_dir: str = "traces"
+
+    # Simulated callers. Defaults to the agent's endpoint and model if left empty.
+    sim_base_url: str = ""
+    sim_api_key: str = ""
+    sim_model: str = ""
+    sim_temperature: float = 0.7
+    max_caller_turns: int = 16
+    conversation_timeout_s: float = 300.0
+    eval_concurrency: int = 4
+    runs_dir: str = "runs"
 
 
 @lru_cache

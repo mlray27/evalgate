@@ -47,17 +47,82 @@ async def reseed() -> None:
     print("database reset to seed state")
 
 
+async def run_eval(args: argparse.Namespace) -> None:
+    from evalgate.evals import run_suite
+    from evalgate.runtime import build_sim_llm
+    from evalgate.scenarios import load_suite, select_scenarios
+
+    settings = get_settings()
+    ids = args.ids.split(",") if args.ids else None
+    scenarios = select_scenarios(load_suite(), args.split, args.category, ids)
+    if args.limit:
+        scenarios = scenarios[: args.limit]
+    if not scenarios:
+        sys.exit("no scenarios match")
+    version = default_version(settings)
+    if args.oracle:
+        from evalgate.oracle import OracleAgent, OracleCaller
+
+        agent_factory, sim_factory = OracleAgent, lambda _: OracleCaller()
+    else:
+        agent_llm, sim_llm = build_llm(settings), build_sim_llm(settings)
+        agent_factory, sim_factory = (lambda _: agent_llm), (lambda _: sim_llm)
+    total = len(scenarios) * args.runs
+    done = 0
+
+    def progress(r) -> None:
+        nonlocal done
+        done += 1
+        mark = "pass" if r.success else "FAIL " + ",".join(r.failed_checks or [r.error or ""])
+        print(f"[{done}/{total}] {r.scenario_id} r{r.run}: {mark}", flush=True)
+
+    print(f"running {total} conversations, agent {version.id}, model {settings.llm_model}")
+    _, out = await run_suite(
+        scenarios,
+        version,
+        agent_factory,
+        sim_factory,
+        settings,
+        runs=args.runs,
+        concurrency=args.concurrency,
+        progress=progress,
+    )
+    print()
+    print((out / "report.md").read_text().split("## By category")[0])
+    print(f"full report: {out / 'report.md'}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="evalgate")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("chat", help="talk to the agent as a caller")
     c.add_argument("--tools", action="store_true", help="print tool calls and guard results")
     sub.add_parser("seed", help="reset the database to the seed state")
+    sub.add_parser("gen-scenarios", help="regenerate scenarios/suite.yaml from templates")
+    e = sub.add_parser("eval", help="run simulated callers against the agent")
+    e.add_argument("--split", default="train", choices=["train", "heldout", "all"])
+    e.add_argument("--category")
+    e.add_argument("--ids", help="comma-separated scenario ids")
+    e.add_argument("--limit", type=int, help="only the first N matching scenarios")
+    e.add_argument("--runs", type=int, default=1, help="runs per scenario")
+    e.add_argument("--concurrency", type=int)
+    e.add_argument(
+        "--oracle",
+        action="store_true",
+        help="validate the suite with a ground-truth agent (no API key needed)",
+    )
     args = p.parse_args()
     if args.cmd == "chat":
         asyncio.run(chat(args.tools))
     elif args.cmd == "seed":
         asyncio.run(reseed())
+    elif args.cmd == "gen-scenarios":
+        from evalgate.scenarios import generate
+
+        suite = generate(get_settings())
+        print(f"wrote {len(suite)} scenarios")
+    elif args.cmd == "eval":
+        asyncio.run(run_eval(args))
     else:
         sys.exit(2)
 
