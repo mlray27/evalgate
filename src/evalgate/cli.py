@@ -19,7 +19,7 @@ async def chat(show_tools: bool) -> None:
     engine, sm = await open_db(settings)
     sess = AgentSession(default_version(settings), build_llm(settings), sm, settings)
     print(f"session {sess.session_id} | agent {sess.version.id} | model {settings.llm_model}")
-    print("Type as the caller. Ctrl-D to hang up.\n")
+    print("Type as the caller. To hang up: Ctrl-D (Mac/Linux) or Ctrl-Z then Enter (Windows).\n")
     seen = 0
     try:
         while not sess.done:
@@ -27,6 +27,8 @@ async def chat(show_tools: bool) -> None:
                 text = await asyncio.to_thread(input, "caller> ")
             except EOFError:
                 break
+            if not text.strip():
+                continue  # ignore blank lines
             print("agent>  ", end="", flush=True)
             try:
                 async for d in sess.respond(text):

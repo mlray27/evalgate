@@ -116,11 +116,11 @@ class OracleAgent(_PlanLLM):
                     (
                         "create_customer",
                         {
-                            "name": "New Caller",
+                            "name": e.new_customer_name,
                             "phone": e.new_customer_phone,
                             "line1": e.new_address_line1,
-                            "city": "Town",
-                            "zip": "00000",
+                            "city": e.new_address_city,
+                            "zip": e.new_address_zip,
                         },
                     )
                 ]

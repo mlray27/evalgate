@@ -64,6 +64,7 @@ class RunResult:
 async def _booking(s, appt: Appointment) -> Booking:
     slot = await s.get(Slot, appt.slot_id)
     addr = await s.get(Address, appt.address_id)
+    cust = await s.get(Customer, appt.customer_id)
     return Booking(
         appt.id,
         appt.customer_id,
@@ -72,6 +73,8 @@ async def _booking(s, appt: Appointment) -> Booking:
         appt.service,
         slot.start,
         appt.status,
+        addr.zip,
+        cust.name if cust else "",
     )
 
 

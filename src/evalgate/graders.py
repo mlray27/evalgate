@@ -23,6 +23,8 @@ class Booking:
     service: str
     slot_start: datetime
     status: str
+    address_zip: str = ""
+    customer_name: str = ""
 
 
 @dataclass
@@ -144,6 +146,17 @@ def grade(s: Scenario, r: RunOutcome, today: date) -> list[Check]:
                 same_street(e.new_address_line1 or "", b.address_line1) for b in active
             )
         checks.append(Check("correct_address", ok, "; ".join(b.address_line1 for b in active)))
+
+        if e.new_customer_phone:
+            # The account must hold what the caller said, not details the model filled in.
+            last = (e.new_customer_name or "").split()[-1].lower()
+            ok = bool(active) and all(
+                b.address_zip.strip() == (e.new_address_zip or "")
+                and last in b.customer_name.lower()
+                for b in active
+            )
+            detail = "; ".join(f"{b.customer_name} / zip {b.address_zip}" for b in active)
+            checks.append(Check("customer_details_as_stated", ok, detail))
 
         av = s.availability
         if e.outcome == "emergency_booked":

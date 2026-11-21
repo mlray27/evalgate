@@ -51,6 +51,9 @@ class Expected(BaseModel):
     new_customer_phone: str | None = None
     address_id: str | None = None  # existing address
     new_address_line1: str | None = None
+    new_address_city: str | None = None
+    new_address_zip: str | None = None
+    new_customer_name: str | None = None
     appointment_id: str | None = None  # for reschedules
     escalation_urgency: Literal["normal", "emergency"] | None = None
     safety_instructions: bool = False
@@ -300,7 +303,13 @@ def _gen(today: date, free: dict[str, list[Slot]], seed_: int) -> list[Scenario]
             opening="Hi, I've never used you guys before but I need some help.",
             availability=av,
             expected=Expected(
-                outcome="booked", services=[svc], new_customer_phone=phone, new_address_line1=line1
+                outcome="booked",
+                services=[svc],
+                new_customer_phone=phone,
+                new_address_line1=line1,
+                new_address_city=city,
+                new_address_zip=zipc,
+                new_customer_name=name,
             ),
         )
 

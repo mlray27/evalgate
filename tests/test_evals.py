@@ -206,3 +206,31 @@ async def test_resume_refuses_a_different_agent_version(suite, tmp_path):
         await run_suite(
             suite[:1], v2, OracleAgent, lambda _: OracleCaller(), st, out_dir=tmp_path / "r"
         )
+
+
+def test_grader_catches_invented_customer_details(suite):
+    """Real failure seen in manual testing: the agent made up a zip the caller never gave."""
+    s = next(x for x in suite if x.category == "new_customer")
+    e = s.expected
+
+    def booking(zip_, name):
+        return Booking(
+            "AP-1",
+            "C021",
+            "A023",
+            e.new_address_line1,
+            e.services[0].value,
+            datetime(2026, 1, 13, 8),
+            "booked",
+            zip_,
+            name,
+        )
+
+    def result(b):
+        out = _outcome(bookings=[b], new_customer_ids=["C021"])
+        return {c.name: c.passed for c in grade(s, out, date(2026, 1, 12))}
+
+    assert result(booking(e.new_address_zip, e.new_customer_name))["customer_details_as_stated"]
+    assert not result(booking("95050", e.new_customer_name))["customer_details_as_stated"]
+    first_name_only = e.new_customer_name.split()[0]
+    assert not result(booking(e.new_address_zip, first_name_only))["customer_details_as_stated"]
