@@ -52,6 +52,7 @@ class RunResult:
     agent_completion_tokens: int = 0
     sim_prompt_tokens: int = 0
     sim_completion_tokens: int = 0
+    sim_ignored_hangups: int = 0
     duration_s: float = 0.0
     error: str | None = None
     trace_file: str = ""
@@ -145,8 +146,15 @@ async def run_conversation(
                 return
             caller = await sim.reply(reply)
             if sim.hung_up:
-                transcript.append({"role": "caller", "text": caller, "hangup": True})
+                transcript.append(
+                    {"role": "caller", "text": caller, "hangup": True, "raw": sim.last_raw}
+                )
                 return
+            if sim.ignored_hangup:
+                # Logged so a misbehaving simulator model shows up in the trace.
+                transcript.append(
+                    {"role": "note", "text": "ignored [HANGUP] mid-call", "raw": sim.last_raw}
+                )
         hit_turn_limit = True
 
     try:
@@ -192,6 +200,7 @@ async def run_conversation(
         agent_completion_tokens=sum(m.completion_tokens for m in session.metrics),
         sim_prompt_tokens=sim.prompt_tokens,
         sim_completion_tokens=sim.completion_tokens,
+        sim_ignored_hangups=sim.ignored_hangups,
         duration_s=round(time.monotonic() - t0, 2),
         error=error,
     )
@@ -352,6 +361,7 @@ def summarize(results: list[RunResult]) -> dict:
         },
         "guard_denials": sum(r.guard_denials for r in results),
         "errors": sum(r.error is not None for r in results),
+        "sim_ignored_hangups": sum(r.sim_ignored_hangups for r in results),
         "ttft_ms_p50": _p(ttft, 0.5),
         "ttft_ms_p95": _p(ttft, 0.95),
         "mean_caller_turns": round(statistics.mean(r.caller_turns for r in results), 1)
@@ -399,7 +409,8 @@ def render_report(s: dict, version: AgentVersion) -> str:
         "- **By split:** " + ", ".join(f"{k} {v}%" for k, v in s["by_split"].items()),
         f"- **TTFT:** p50 {s['ttft_ms_p50']} ms, p95 {s['ttft_ms_p95']} ms",
         f"- **Mean caller turns:** {s['mean_caller_turns']}",
-        f"- **Guard denials:** {s['guard_denials']}, **errors:** {s['errors']}",
+        f"- **Guard denials:** {s['guard_denials']}, **errors:** {s['errors']}, "
+        f"**simulator hang-ups ignored:** {s.get('sim_ignored_hangups', 0)}",
         "",
         "## By category",
         "",

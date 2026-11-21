@@ -234,3 +234,37 @@ def test_grader_catches_invented_customer_details(suite):
     assert not result(booking("95050", e.new_customer_name))["customer_details_as_stated"]
     first_name_only = e.new_customer_name.split()[0]
     assert not result(booking(e.new_address_zip, first_name_only))["customer_details_as_stated"]
+
+
+@pytest.mark.parametrize(
+    ("text", "real"),
+    [
+        ("Great, thanks so much. Bye!", True),
+        ("Okay, thank you, have a good day.", True),
+        ("Sure thing, my name's Rachel Stein and my number is 555-0109.", False),
+        ("Yes, that's correct. What time tomorrow afternoon do you have?", False),
+        ("Thanks! Could you also confirm my phone number?", False),
+    ],
+)
+def test_is_real_hangup(text, real):
+    from evalgate.simulator import is_real_hangup
+
+    assert is_real_hangup(text) is real
+
+
+async def test_simulator_ignores_hangup_tag_mid_call(suite):
+    """Regression: gpt-oss on Groq appended [HANGUP] to ordinary answers, ending calls early."""
+    sim = CallerSimulator(
+        suite[0],
+        ScriptedLLM(
+            [
+                Step(text="Sure, my number is 555-0109. [HANGUP]"),
+                Step(text="Perfect, thanks. Bye! [HANGUP]"),
+            ]
+        ),
+        "Co",
+    )
+    assert await sim.reply("Can I get your number?") == "Sure, my number is 555-0109."
+    assert not sim.hung_up and sim.ignored_hangups == 1
+    await sim.reply("You're booked for Tuesday.")
+    assert sim.hung_up
