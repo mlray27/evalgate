@@ -152,3 +152,63 @@ async def test_barge_in_keeps_history_valid(sm, settings, version):
     assert sess.messages[-1]["content"].endswith("[interrupted]")
     assert sess.trace.of_type("interrupted")
     assert await sess.say("Wait, I meant the water heater") == "Got it, the water heater."
+
+
+async def test_provider_extra_fields_on_tool_calls_are_echoed_back(sm, settings, version):
+    """Gemini requires each tool call's thought signature to be sent back on the next request."""
+    from openai.types.chat import ChatCompletionChunk
+
+    from evalgate.llm import OpenAICompatLLM
+
+    def chunk(delta):
+        return ChatCompletionChunk.model_validate(
+            {
+                "id": "x",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "m",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            }
+        )
+
+    sig = {"google": {"thought_signature": "SIG123"}}
+    responses = [
+        [
+            chunk(
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "c1",
+                            "type": "function",
+                            "extra_content": sig,
+                            "function": {
+                                "name": "lookup_customer",
+                                "arguments": '{"phone": "555-0101"}',
+                            },
+                        }
+                    ],
+                }
+            )
+        ],
+        [chunk({"content": "Hi Dana!"})],
+    ]
+    sent = []
+
+    class FakeCompletions:
+        async def create(self, **kw):
+            sent.append(kw["messages"])
+
+            async def gen():
+                for c in responses.pop(0):
+                    yield c
+
+            return gen()
+
+    llm = OpenAICompatLLM("http://x", "k", "gemini-test")
+    llm.client = type("C", (), {"chat": type("Ch", (), {"completions": FakeCompletions()})()})()
+    sess = AgentSession(version, llm, sm, settings)
+    assert await sess.say("Hi, 555-0101") == "Hi Dana!"
+    replayed = [m for m in sent[1] if m.get("tool_calls")][0]["tool_calls"][0]
+    assert replayed["extra_content"] == sig

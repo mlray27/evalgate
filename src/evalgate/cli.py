@@ -13,6 +13,8 @@ from evalgate.seed import seed
 
 
 async def chat(show_tools: bool) -> None:
+    from openai import APIError
+
     settings = get_settings()
     engine, sm = await open_db(settings)
     sess = AgentSession(default_version(settings), build_llm(settings), sm, settings)
@@ -26,8 +28,13 @@ async def chat(show_tools: bool) -> None:
             except EOFError:
                 break
             print("agent>  ", end="", flush=True)
-            async for d in sess.respond(text):
-                print(d, end="", flush=True)
+            try:
+                async for d in sess.respond(text):
+                    print(d, end="", flush=True)
+            except APIError as e:
+                print(f"\n[provider error] {type(e).__name__}: {getattr(e, 'body', None) or e}")
+                print("[the trace was saved; paste this error if you need help]")
+                break
             print()
             if show_tools:
                 for ev in sess.trace.of_type("tool")[seen:]:
@@ -114,8 +121,6 @@ async def check() -> None:
     """Verify keys, model ids, and tool calling for the agent and simulator endpoints."""
     from openai import APIError, AsyncOpenAI
 
-    from evalgate.tools import TOOLS
-
     st = get_settings()
     endpoints = [
         ("agent", st.llm_base_url, st.llm_api_key, st.llm_model, True),
@@ -148,18 +153,29 @@ async def check() -> None:
             print(f"  could not list models ({type(e).__name__}); trying a request anyway")
         try:
             if needs_tools:
-                r = await client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "user", "content": "Look up the customer with phone 555-0101."}
-                    ],
-                    tools=[TOOLS["lookup_customer"].openai_schema()],
-                )
-                calls = r.choices[0].message.tool_calls or []
-                if calls and calls[0].function.name == "lookup_customer":
-                    print(f"  tool calling works: {calls[0].function.arguments}")
+                # A real two-turn exchange: the model calls a tool, gets the result, and replies.
+                # This is what catches provider quirks a single request won't (e.g. Gemini
+                # rejecting a follow-up that drops its thought signature).
+                import tempfile
+
+                from evalgate.agent import AgentSession
+                from evalgate.db import make_engine, make_sessionmaker
+                from evalgate.seed import seed
+
+                with tempfile.TemporaryDirectory() as d:
+                    engine = make_engine(f"sqlite+aiosqlite:///{d}/check.db")
+                    sm = make_sessionmaker(engine)
+                    await seed(engine, sm, st.today, st.seed)
+                    sess = AgentSession(default_version(st), build_llm(st), sm, st)
+                    try:
+                        reply = await sess.say("Hi, my account number is 555-0101.")
+                    finally:
+                        await engine.dispose()
+                tools_used = [e["name"] for e in sess.trace.of_type("tool")]
+                if "lookup_customer" in tools_used and reply:
+                    print(f"  tool calling works: called {tools_used}, replied {reply[:80]!r}")
                 else:
-                    print("  WARNING: model answered without calling the tool")
+                    print(f"  WARNING: tools {tools_used}, reply {reply[:80]!r}")
                     ok = False
             else:
                 r = await client.chat.completions.create(
@@ -175,7 +191,7 @@ async def check() -> None:
                 "RateLimitError": "rate limited; wait a minute or check your quota",
             }.get(type(e).__name__, "")
             print(f"  FAILED: {type(e).__name__} {hint}".rstrip())
-            print(f"  {str(e)[:300]}")
+            print(f"  {str(getattr(e, 'body', None) or e)[:400]}")
     print("\nall good" if ok else "\nfix the problems above, then run this again")
 
 

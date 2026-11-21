@@ -17,6 +17,9 @@ class ToolCall:
     id: str
     name: str
     arguments: str  # raw JSON string, exactly as the model produced it
+    # Provider-specific data that must be sent back unchanged with this call in later requests.
+    # Gemini puts a required "thought signature" here; dropping it makes the next request a 400.
+    extra: dict | None = None
 
 
 @dataclass
@@ -108,7 +111,10 @@ class OpenAICompatLLM:
                     idx = next(
                         (i for i, c in calls.items() if tc.id and c["id"] == tc.id), len(calls)
                     )
-                slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": "", "extra": None})
+                extra = (tc.model_extra or {}).get("extra_content")
+                if extra:
+                    slot["extra"] = extra
                 if tc.id:
                     slot["id"] = tc.id
                 if tc.function and tc.function.name:
@@ -118,7 +124,7 @@ class OpenAICompatLLM:
         yield Completion(
             text="".join(text),
             tool_calls=[
-                ToolCall(c["id"] or f"call_{i}", c["name"], c["arguments"] or "{}")
+                ToolCall(c["id"] or f"call_{i}", c["name"], c["arguments"] or "{}", c["extra"])
                 for i, c in sorted(calls.items())
             ],
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,

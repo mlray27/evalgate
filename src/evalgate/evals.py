@@ -152,7 +152,7 @@ async def run_conversation(
         hit_turn_limit = True
         error = "conversation_timeout"
     except Exception as e:  # a crashed run is a failed run, never a silent skip
-        error = f"{type(e).__name__}: {e}"
+        error = f"{type(e).__name__}: {getattr(e, 'body', None) or e}"
         if type(e).__name__ == "RateLimitError":
             error = f"{RATE_LIMITED}: {e}"
 

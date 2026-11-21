@@ -184,14 +184,16 @@ class AgentSession:
     def _append_assistant(self, c: Completion) -> None:
         msg: dict = {"role": "assistant", "content": c.text or None}
         if c.tool_calls:
-            msg["tool_calls"] = [
-                {
+            msg["tool_calls"] = []
+            for t in c.tool_calls:
+                call = {
                     "id": t.id,
                     "type": "function",
                     "function": {"name": t.name, "arguments": t.arguments},
                 }
-                for t in c.tool_calls
-            ]
+                if t.extra:
+                    call["extra_content"] = t.extra  # echo provider data back (Gemini signatures)
+                msg["tool_calls"].append(call)
         self.messages.append(msg)
         if c.text:
             self.trace.add("assistant", turn=self.state.turn_index, text=c.text.strip())
