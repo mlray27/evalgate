@@ -268,3 +268,34 @@ async def test_simulator_ignores_hangup_tag_mid_call(suite):
     assert not sim.hung_up and sim.ignored_hangups == 1
     await sim.reply("You're booked for Tuesday.")
     assert sim.hung_up
+
+
+async def test_agent_hears_yes_said_with_goodbye(suite, tmp_path):
+    """Regression: callers often say "yes, book it, thanks, bye" in one breath and hang up.
+    The agent must still get that last message, or nothing gets booked."""
+
+    class EagerCaller:
+        model = "eager"
+
+        async def stream(self, messages, tools):
+            from evalgate.llm import Completion, TextDelta
+
+            text = "Yes, that works. Thanks, bye! [HANGUP]"
+            yield TextDelta(text)
+            yield Completion(text)
+
+    st = Settings(runs_dir=str(tmp_path))
+    version = AgentVersion(sops=load_library(), model="oracle")
+    picked = [s for s in suite if s.category == "standard_repair"][:3]
+    results, _ = await run_suite(
+        picked, version, OracleAgent, lambda _: EagerCaller(), st, out_dir=tmp_path / "eager"
+    )
+    assert all(r.success for r in results), [(r.scenario_id, r.failed_checks) for r in results]
+
+
+def test_simulator_knows_the_date(suite):
+    from evalgate.simulator import caller_system_prompt
+
+    p = caller_system_prompt(suite[0], "Co", date(2026, 1, 12))
+    assert "Today is Monday January 12, 2026" in p
+    assert "ONLY the customer" in p

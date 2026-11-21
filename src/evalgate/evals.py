@@ -125,7 +125,7 @@ async def run_conversation(
         session_id=sid,
         faults=ToolFaults(copy.deepcopy(scenario.faults)),
     )
-    sim = CallerSimulator(scenario, sim_llm, settings.company_name)
+    sim = CallerSimulator(scenario, sim_llm, settings.company_name, settings.today)
     transcript: list[dict] = []
     agent_text: list[str] = []
     hit_turn_limit = False
@@ -149,6 +149,13 @@ async def run_conversation(
                 transcript.append(
                     {"role": "caller", "text": caller, "hangup": True, "raw": sim.last_raw}
                 )
+                if caller:
+                    # The agent still hears the last sentence before the line drops. Callers often
+                    # agree and say goodbye in one breath ("yes, book it, thanks, bye"); the
+                    # agent must be able to act on that "yes".
+                    final = await session.say(caller)
+                    agent_text.append(final)
+                    transcript.append({"role": "agent", "text": final, "after_hangup": True})
                 return
             if sim.ignored_hangup:
                 # Logged so a misbehaving simulator model shows up in the trace.

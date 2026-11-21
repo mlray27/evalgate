@@ -11,6 +11,7 @@ a farewell word and no question. Otherwise the tag is dropped and the call conti
 from __future__ import annotations
 
 import re
+from datetime import date
 
 from evalgate.llm import LLM, Completion, TextDelta
 from evalgate.scenarios import Scenario
@@ -28,13 +29,17 @@ def is_real_hangup(text: str) -> bool:
     return bool(FAREWELL_RE.search(text)) and "?" not in text
 
 
-def caller_system_prompt(s: Scenario, company: str) -> str:
+def caller_system_prompt(s: Scenario, company: str, today: date | None = None) -> str:
+    when = f"Today is {today.strftime('%A %B')} {today.day}, {today.year}. " if today else ""
     return (
         f"You are role-playing a customer phoning {company}, a heating, cooling, and plumbing "
-        f"company. You are talking to their phone agent.\n\n"
+        f"company. You are talking to their phone agent. {when}\n\n"
         f"Your personality: {s.persona}.\n\n"
         f"Your situation (private; reveal details naturally, mostly when asked):\n{s.brief}\n\n"
         "How to talk:\n"
+        "- You are ONLY the customer. Write one reply to the agent's last message, then stop.\n"
+        "- Never write the agent's lines, never continue the conversation on your own, and never "
+        "describe what happens next. The agent will answer you in the next message.\n"
         "- Write only what you say out loud. One or two short sentences, like a real phone call.\n"
         "- No stage directions, no narration, no lists.\n"
         "- Answer what the agent asks. Don't dump every fact at once.\n"
@@ -52,13 +57,15 @@ def caller_system_prompt(s: Scenario, company: str) -> str:
 
 
 class CallerSimulator:
-    def __init__(self, scenario: Scenario, llm: LLM, company: str) -> None:
+    def __init__(
+        self, scenario: Scenario, llm: LLM, company: str, today: date | None = None
+    ) -> None:
         self.scenario = scenario
         self.llm = llm
         self.hung_up = False
         # From the caller's point of view, the agent is the "user" and the caller is "assistant".
         self.messages: list[dict] = [
-            {"role": "system", "content": caller_system_prompt(scenario, company)},
+            {"role": "system", "content": caller_system_prompt(scenario, company, today)},
             {"role": "assistant", "content": scenario.opening},
         ]
         self.prompt_tokens = 0
