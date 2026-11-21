@@ -1,4 +1,4 @@
-# EvalGate — Requirements
+# EvalGate - Requirements
 
 **Research question:** When can an AI that rewrites another agent's operating procedures be trusted?
 
@@ -128,11 +128,11 @@ whether those fixes generalize or just game the tests.
 
 ## 6. Milestones
 
-1. **M1 — Runtime + guard (week 1):** data layer, seed, SOPs, tools, guard, agent loop, WebSocket + CLI,
+1. **M1 - Runtime + guard (week 1):** data layer, seed, SOPs, tools, guard, agent loop, WebSocket + CLI,
    tests including the duplicate-booking-after-timeout test.
-2. **M2 — Simulator + evals (week 1–2):** caller simulator, 150 scenarios, graders, runner, baseline report.
+2. **M2 - Simulator + evals (week 1–2):** caller simulator, 150 scenarios, graders, runner, baseline report.
    Speculative execution.
-3. **M3 — Agent Manager + trust (week 2–3):** failure clustering, proposals, versioning, trust metrics,
+3. **M3 - Agent Manager + trust (week 2–3):** failure clustering, proposals, versioning, trust metrics,
    reward-hacking probe, trust gate, write-up.
 4. **Stretch:** trace viewer, context-provisioning experiment (all-in-context vs retrieved vs prefetch
    SOPs: accuracy vs TTFT), streaming voice.
