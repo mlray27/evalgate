@@ -6,10 +6,13 @@ says out loud. It ends the call by putting [HANGUP] at the end of its message.
 
 from __future__ import annotations
 
+import re
+
 from evalgate.llm import LLM, Completion, TextDelta
 from evalgate.scenarios import Scenario
 
 HANGUP = "[HANGUP]"
+THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
 
 def caller_system_prompt(s: Scenario, company: str) -> str:
@@ -58,7 +61,7 @@ class CallerSimulator:
             elif isinstance(ev, Completion):
                 self.prompt_tokens += ev.prompt_tokens
                 self.completion_tokens += ev.completion_tokens
-        said = "".join(text).strip()
+        said = THINK_RE.sub("", "".join(text)).strip()  # some models leak reasoning
         if HANGUP in said:
             self.hung_up = True
             said = said.replace(HANGUP, "").strip()

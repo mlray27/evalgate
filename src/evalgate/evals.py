@@ -32,6 +32,7 @@ from evalgate.sops import AgentVersion
 from evalgate.tools import ToolFaults, _digits
 
 LLMFactory = Callable[[Scenario], LLM]
+RATE_LIMITED = "rate_limited"
 
 
 @dataclass
@@ -152,6 +153,8 @@ async def run_conversation(
         error = "conversation_timeout"
     except Exception as e:  # a crashed run is a failed run, never a silent skip
         error = f"{type(e).__name__}: {e}"
+        if type(e).__name__ == "RateLimitError":
+            error = f"{RATE_LIMITED}: {e}"
 
     snap = await _snapshot(sm, scenario, session, p9001_start)
     outcome = RunOutcome(
@@ -207,6 +210,13 @@ async def run_conversation(
     return result
 
 
+def load_results(out: Path) -> list[RunResult]:
+    path = out / "results.jsonl"
+    if not path.exists():
+        return []
+    return [RunResult(**json.loads(line)) for line in path.read_text().splitlines() if line.strip()]
+
+
 async def run_suite(
     scenarios: list[Scenario],
     version: AgentVersion,
@@ -218,15 +228,22 @@ async def run_suite(
     out_dir: Path | None = None,
     progress: Callable[[RunResult], None] | None = None,
 ) -> tuple[list[RunResult], Path]:
+    """Run scenarios x runs. If out_dir already has results, finished conversations are skipped,
+    so a run cut short by a daily quota can be resumed later into the same report.
+
+    A conversation that hits a provider rate limit is not recorded (it would score the provider,
+    not the agent) and stops the remaining work.
+    """
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = out_dir or Path(settings.runs_dir) / f"{stamp}-{version.id}"
     out.mkdir(parents=True, exist_ok=True)
-    template = out / "template.db"
-    engine = make_engine(f"sqlite+aiosqlite:///{template}")
-    await seed(engine, make_sessionmaker(engine), settings.today, settings.seed)
-    await engine.dispose()
 
-    (out / "version.json").write_text(
+    version_file = out / "version.json"
+    if version_file.exists():
+        prev = json.loads(version_file.read_text())["id"]
+        if prev != version.id:
+            raise ValueError(f"{out} holds results for {prev}, not {version.id}; use a new folder")
+    version_file.write_text(
         json.dumps(
             {
                 "id": version.id,
@@ -239,28 +256,50 @@ async def run_suite(
         )
     )
 
+    done = {(r.scenario_id, r.run) for r in load_results(out)}
+    todo = [(sc, k) for sc in scenarios for k in range(runs) if (sc.id, k) not in done]
+
+    template = out / "template.db"
+    engine = make_engine(f"sqlite+aiosqlite:///{template}")
+    await seed(engine, make_sessionmaker(engine), settings.today, settings.seed)
+    await engine.dispose()
+
     sem = asyncio.Semaphore(concurrency or settings.eval_concurrency)
-    results: list[RunResult] = []
-    results_file = (out / "results.jsonl").open("w")
+    stop = asyncio.Event()
+    new: list[RunResult] = []
+    results_file = (out / "results.jsonl").open("a")
 
     async def one(sc: Scenario, k: int) -> None:
         async with sem:
+            if stop.is_set():
+                return
             r = await run_conversation(
                 sc, version, agent_llm(sc), sim_llm(sc), settings, template, out, k
             )
-        results.append(r)
+        if r.error and r.error.startswith(RATE_LIMITED):
+            stop.set()
+            Path(r.trace_file).unlink(missing_ok=True)  # noqa: ASYNC240
+            return
+        new.append(r)
         results_file.write(json.dumps(asdict(r)) + "\n")
         results_file.flush()
         if progress:
             progress(r)
 
     try:
-        await asyncio.gather(*(one(sc, k) for sc in scenarios for k in range(runs)))
+        await asyncio.gather(*(one(sc, k) for sc, k in todo))
     finally:
         results_file.close()
         template.unlink(missing_ok=True)
-    results.sort(key=lambda r: (r.scenario_id, r.run))
+
+    wanted = {(sc.id, k) for sc in scenarios for k in range(runs)}
+    results = sorted(
+        (r for r in load_results(out) if (r.scenario_id, r.run) in wanted),
+        key=lambda r: (r.scenario_id, r.run),
+    )
     summary = summarize(results)
+    summary["remaining"] = len(wanted) - len(results)
+    summary["stopped_on_rate_limit"] = stop.is_set()
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     (out / "report.md").write_text(render_report(summary, version))
     return results, out
@@ -342,6 +381,15 @@ def render_report(s: dict, version: AgentVersion) -> str:
         "",
         f"Model `{version.model}`. {s['scenarios']} scenarios x {s['runs_per_scenario']} run(s) = "
         f"{s['conversations']} conversations.",
+        "",
+        *(
+            [
+                f"> **Partial run:** {s['remaining']} conversations still to go "
+                f"(stopped on a provider rate limit; rerun with --resume)."
+            ]
+            if s.get("remaining")
+            else []
+        ),
         "",
         f"- **Success rate:** {s['success_rate']}%",
         f"- **pass^k (all runs of a scenario pass):** {s['pass_all_k']}%",

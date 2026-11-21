@@ -130,3 +130,79 @@ async def test_careless_agent_fails(suite, tmp_path):
     gas = [r for r in results if r.category == "safety_gas"]
     assert all("no_booking_made" in r.failed_checks for r in gas)
     assert all("escalated_correctly" in r.failed_checks for r in gas)
+
+
+def test_per_category_sampling(suite):
+    from evalgate.scenarios import select_scenarios
+
+    picked = select_scenarios(suite, "train", per_category=2)
+    counts = Counter(s.category for s in picked)
+    assert len(counts) == 14 and set(counts.values()) == {2}
+    assert all(s.split == "train" for s in picked)
+
+
+def test_tool_schemas_are_provider_friendly():
+    import json
+
+    from evalgate.tools import TOOLS
+
+    blob = json.dumps([t.openai_schema() for t in TOOLS.values()])
+    for banned in ('"title"', '"$ref"', '"$defs"', '"format"', '"default"'):
+        assert banned not in blob
+
+
+async def test_rate_limit_stops_run_and_resume_finishes_it(suite, tmp_path):
+    import httpx
+    from openai import RateLimitError
+
+    from evalgate.evals import load_results
+
+    picked = [s for s in suite if s.category == "standard_repair"][:6]
+    quota = {"left": 3}
+
+    class QuotaAgent(OracleAgent):
+        async def stream(self, messages, tools):
+            if quota["left"] < 0:
+                req = httpx.Request("POST", "http://x")
+                raise RateLimitError(
+                    "daily quota", response=httpx.Response(429, request=req), body=None
+                )
+            async for ev in super().stream(messages, tools):
+                yield ev
+
+    def factory(sc):
+        quota["left"] -= 1
+        return QuotaAgent(sc)
+
+    st = Settings(runs_dir=str(tmp_path))
+    version = AgentVersion(sops=load_library(), model="oracle")
+    out = tmp_path / "run"
+    results, _ = await run_suite(
+        picked, version, factory, lambda _: OracleCaller(), st, concurrency=1, out_dir=out
+    )
+    summary = __import__("json").loads((out / "summary.json").read_text())
+    assert summary["stopped_on_rate_limit"] and summary["remaining"] == 3
+    assert len(load_results(out)) == 3 and all(r.success for r in results)
+    assert "Partial run" in (out / "report.md").read_text()
+
+    quota["left"] = 100  # next day
+    results, _ = await run_suite(
+        picked, version, factory, lambda _: OracleCaller(), st, concurrency=1, out_dir=out
+    )
+    summary = __import__("json").loads((out / "summary.json").read_text())
+    assert summary["remaining"] == 0 and not summary["stopped_on_rate_limit"]
+    assert len(results) == 6 and all(r.success for r in results)
+    assert len(load_results(out)) == 6  # nothing ran twice
+
+
+async def test_resume_refuses_a_different_agent_version(suite, tmp_path):
+    st = Settings(runs_dir=str(tmp_path))
+    v1 = AgentVersion(sops=load_library(), model="oracle")
+    v2 = v1.with_sop_text("tone", "Be brief.")
+    await run_suite(
+        suite[:1], v1, OracleAgent, lambda _: OracleCaller(), st, out_dir=tmp_path / "r"
+    )
+    with pytest.raises(ValueError, match="use a new folder"):
+        await run_suite(
+            suite[:1], v2, OracleAgent, lambda _: OracleCaller(), st, out_dir=tmp_path / "r"
+        )

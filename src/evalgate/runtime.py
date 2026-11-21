@@ -21,6 +21,7 @@ def build_llm(settings: Settings) -> LLM:
         settings.llm_model,
         settings.llm_temperature,
         settings.llm_timeout_s,
+        settings.llm_max_retries,
     )
 
 
@@ -34,6 +35,7 @@ def build_sim_llm(settings: Settings) -> LLM:
         settings.sim_model or settings.llm_model,
         settings.sim_temperature,
         settings.llm_timeout_s,
+        settings.llm_max_retries,
     )
 
 

@@ -78,6 +78,7 @@ def select_scenarios(
     split: str | None = None,
     category: str | None = None,
     ids: list[str] | None = None,
+    per_category: int | None = None,
 ) -> list[Scenario]:
     out = suite
     if split and split != "all":
@@ -86,6 +87,14 @@ def select_scenarios(
         out = [s for s in out if s.category == category]
     if ids:
         out = [s for s in out if s.id in ids]
+    if per_category:
+        seen: dict[str, int] = {}
+        picked = []
+        for s in sorted(out, key=lambda x: x.id):
+            if seen.get(s.category, 0) < per_category:
+                seen[s.category] = seen.get(s.category, 0) + 1
+                picked.append(s)
+        out = picked
     return out
 
 

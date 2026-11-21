@@ -605,9 +605,31 @@ class ToolSpec:
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.args.model_json_schema(),
+                "parameters": _compact(self.args.model_json_schema()),
             },
         }
+
+
+def _compact(schema: dict) -> dict:
+    """Drop titles, defaults and formats, inline refs: fewer tokens, wider provider support."""
+    defs = schema.pop("$defs", {})
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                return walk(dict(defs[node["$ref"].split("/")[-1]]))
+            if "anyOf" in node and any(x.get("type") == "null" for x in node["anyOf"]):
+                rest = [x for x in node["anyOf"] if x.get("type") != "null"]
+                if len(rest) == 1:
+                    merged = {**{k: v for k, v in node.items() if k != "anyOf"}, **rest[0]}
+                    return walk(merged)
+            # Some providers (Gemini) accept only a subset of JSON Schema; keep to the basics.
+            return {k: walk(v) for k, v in node.items() if k not in ("title", "default", "format")}
+        if isinstance(node, list):
+            return [walk(x) for x in node]
+        return node
+
+    return walk(schema)
 
 
 TOOLS: dict[str, ToolSpec] = {

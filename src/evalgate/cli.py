@@ -48,13 +48,16 @@ async def reseed() -> None:
 
 
 async def run_eval(args: argparse.Namespace) -> None:
+    import json
+    from pathlib import Path
+
     from evalgate.evals import run_suite
     from evalgate.runtime import build_sim_llm
     from evalgate.scenarios import load_suite, select_scenarios
 
     settings = get_settings()
     ids = args.ids.split(",") if args.ids else None
-    scenarios = select_scenarios(load_suite(), args.split, args.category, ids)
+    scenarios = select_scenarios(load_suite(), args.split, args.category, ids, args.per_category)
     if args.limit:
         scenarios = scenarios[: args.limit]
     if not scenarios:
@@ -74,9 +77,13 @@ async def run_eval(args: argparse.Namespace) -> None:
         nonlocal done
         done += 1
         mark = "pass" if r.success else "FAIL " + ",".join(r.failed_checks or [r.error or ""])
-        print(f"[{done}/{total}] {r.scenario_id} r{r.run}: {mark}", flush=True)
+        print(f"[{done}] {r.scenario_id} r{r.run}: {mark}", flush=True)
 
-    print(f"running {total} conversations, agent {version.id}, model {settings.llm_model}")
+    out_dir = Path(args.resume) if args.resume else None
+    agent_model = "oracle" if args.oracle else settings.llm_model
+    print(f"{total} conversations, agent {version.id}, model {agent_model}")
+    if out_dir:
+        print(f"resuming into {out_dir}")
     _, out = await run_suite(
         scenarios,
         version,
@@ -85,11 +92,91 @@ async def run_eval(args: argparse.Namespace) -> None:
         settings,
         runs=args.runs,
         concurrency=args.concurrency,
+        out_dir=out_dir,
         progress=progress,
     )
     print()
     print((out / "report.md").read_text().split("## By category")[0])
     print(f"full report: {out / 'report.md'}")
+    summary = json.loads((out / "summary.json").read_text())
+    if summary.get("stopped_on_rate_limit"):
+        again = [a for a in sys.argv[1:] if not a.startswith("--resume")]
+        if "--resume" in sys.argv:
+            i = sys.argv.index("--resume")
+            again = sys.argv[1:i] + sys.argv[i + 2 :]
+        print()
+        print("Stopped: the model provider's rate limit was hit (probably the daily quota).")
+        print(f"{summary['remaining']} conversations left. When the quota resets, run:")
+        print(f"  uv run evalgate {' '.join(again)} --resume {out}")
+
+
+async def check() -> None:
+    """Verify keys, model ids, and tool calling for the agent and simulator endpoints."""
+    from openai import APIError, AsyncOpenAI
+
+    from evalgate.tools import TOOLS
+
+    st = get_settings()
+    endpoints = [
+        ("agent", st.llm_base_url, st.llm_api_key, st.llm_model, True),
+        (
+            "simulator",
+            st.sim_base_url or st.llm_base_url,
+            st.sim_api_key or st.llm_api_key,
+            st.sim_model or st.llm_model,
+            False,
+        ),
+    ]
+    ok = True
+    for role, url, key, model, needs_tools in endpoints:
+        print(f"\n[{role}] {model} @ {url}")
+        if not key:
+            print("  no API key set")
+            ok = False
+            continue
+        client = AsyncOpenAI(base_url=url, api_key=key, max_retries=1, timeout=30)
+        try:
+            ids = [m.id async for m in client.models.list()]
+            short = [i.split("/")[-1] for i in ids]
+            if model in ids or model.split("/")[-1] in short:
+                print("  model found")
+            else:
+                print("  model NOT in this provider's list. Some available ids:")
+                for i in ids[:25]:
+                    print(f"    {i}")
+        except APIError as e:
+            print(f"  could not list models ({type(e).__name__}); trying a request anyway")
+        try:
+            if needs_tools:
+                r = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "user", "content": "Look up the customer with phone 555-0101."}
+                    ],
+                    tools=[TOOLS["lookup_customer"].openai_schema()],
+                )
+                calls = r.choices[0].message.tool_calls or []
+                if calls and calls[0].function.name == "lookup_customer":
+                    print(f"  tool calling works: {calls[0].function.arguments}")
+                else:
+                    print("  WARNING: model answered without calling the tool")
+                    ok = False
+            else:
+                r = await client.chat.completions.create(
+                    model=model, messages=[{"role": "user", "content": "Say hi in three words."}]
+                )
+                print(f"  chat works: {r.choices[0].message.content!r}")
+        except APIError as e:
+            ok = False
+            hint = {
+                "AuthenticationError": "the API key is wrong",
+                "PermissionDeniedError": "the key can't use this model",
+                "NotFoundError": "the model id is wrong",
+                "RateLimitError": "rate limited; wait a minute or check your quota",
+            }.get(type(e).__name__, "")
+            print(f"  FAILED: {type(e).__name__} {hint}".rstrip())
+            print(f"  {str(e)[:300]}")
+    print("\nall good" if ok else "\nfix the problems above, then run this again")
 
 
 def main() -> None:
@@ -99,11 +186,14 @@ def main() -> None:
     c.add_argument("--tools", action="store_true", help="print tool calls and guard results")
     sub.add_parser("seed", help="reset the database to the seed state")
     sub.add_parser("gen-scenarios", help="regenerate scenarios/suite.yaml from templates")
+    sub.add_parser("check", help="test your API keys, model ids and tool calling")
     e = sub.add_parser("eval", help="run simulated callers against the agent")
     e.add_argument("--split", default="train", choices=["train", "heldout", "all"])
     e.add_argument("--category")
     e.add_argument("--ids", help="comma-separated scenario ids")
     e.add_argument("--limit", type=int, help="only the first N matching scenarios")
+    e.add_argument("--per-category", type=int, help="first N scenarios from each category")
+    e.add_argument("--resume", metavar="RUN_DIR", help="continue a stopped run in this folder")
     e.add_argument("--runs", type=int, default=1, help="runs per scenario")
     e.add_argument("--concurrency", type=int)
     e.add_argument(
@@ -112,7 +202,18 @@ def main() -> None:
         help="validate the suite with a ground-truth agent (no API key needed)",
     )
     args = p.parse_args()
-    if args.cmd == "chat":
+    try:
+        _dispatch(args)
+    except RuntimeError as e:  # config problems: show the message, not a traceback
+        sys.exit(f"error: {e}")
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+def _dispatch(args: argparse.Namespace) -> None:
+    if args.cmd == "check":
+        asyncio.run(check())
+    elif args.cmd == "chat":
         asyncio.run(chat(args.tools))
     elif args.cmd == "seed":
         asyncio.run(reseed())

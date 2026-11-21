@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     llm_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
     llm_temperature: float = 0.2
     llm_timeout_s: float = 30.0
+    llm_max_retries: int = 6
 
     # Zero-setup default; point at Postgres from docker-compose for realistic runs.
     database_url: str = "sqlite+aiosqlite:///evalgate.db"

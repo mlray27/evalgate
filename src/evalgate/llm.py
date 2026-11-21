@@ -42,24 +42,53 @@ class LLM(Protocol):
 
 
 class OpenAICompatLLM:
+    """Any OpenAI-compatible endpoint: Together, Groq, Gemini, Fireworks, vLLM, Ollama.
+
+    Rate limits (429) are retried with backoff by the SDK, honoring retry-after headers. If they
+    persist (for example a daily quota), openai.RateLimitError propagates to the caller.
+    """
+
     def __init__(
-        self, base_url: str, api_key: str, model: str, temperature: float = 0.2, timeout: float = 30
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        temperature: float = 0.2,
+        timeout: float = 30,
+        max_retries: int = 6,
     ) -> None:
         from openai import AsyncOpenAI
 
-        self.client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+        self.client = AsyncOpenAI(
+            base_url=base_url, api_key=api_key, timeout=timeout, max_retries=max_retries
+        )
         self.model = model
         self.temperature = temperature
+        self._usage_supported = True
 
-    async def stream(self, messages: list[dict], tools: list[dict]) -> AsyncIterator[LLMEvent]:
-        resp = await self.client.chat.completions.create(
+    async def _create(self, messages: list[dict], tools: list[dict]):
+        from openai import BadRequestError
+
+        kwargs = dict(
             model=self.model,
             messages=messages,
             tools=tools or None,
             temperature=self.temperature,
             stream=True,
-            stream_options={"include_usage": True},
         )
+        if self._usage_supported:
+            try:
+                return await self.client.chat.completions.create(
+                    **kwargs, stream_options={"include_usage": True}
+                )
+            except BadRequestError as e:
+                if "stream_options" not in str(e):
+                    raise
+                self._usage_supported = False  # some providers reject it; skip token counts
+        return await self.client.chat.completions.create(**kwargs)
+
+    async def stream(self, messages: list[dict], tools: list[dict]) -> AsyncIterator[LLMEvent]:
+        resp = await self._create(messages, tools)
         text: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
         usage = None
@@ -73,7 +102,13 @@ class OpenAICompatLLM:
                 text.append(delta.content)
                 yield TextDelta(delta.content)
             for tc in delta.tool_calls or []:
-                slot = calls.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+                # Some providers omit `index` and send each call whole; key those by id.
+                idx = tc.index
+                if idx is None:
+                    idx = next(
+                        (i for i, c in calls.items() if tc.id and c["id"] == tc.id), len(calls)
+                    )
+                slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
                 if tc.id:
                     slot["id"] = tc.id
                 if tc.function and tc.function.name:

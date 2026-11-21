@@ -45,13 +45,21 @@ The scenarios are generated from templates against the seed data rather than wri
 
 ```bash
 uv sync
-cp .env.example .env    # add a key for any OpenAI-compatible API (Together, Fireworks, Groq)
-make test               # no key needed, uses a scripted fake model
-make chat               # talk to the agent yourself; add --tools to see what it calls
-make eval-oracle        # run the whole suite with the oracle, no key needed
-make eval               # run the real agent on the training split
+cp .env.example .env              # Windows: copy .env.example .env
+uv run evalgate check             # tests your keys, model ids and tool calling
+uv run pytest -q                  # no key needed, uses a scripted fake model
+uv run evalgate chat --tools      # talk to the agent yourself and watch its tool calls
+uv run evalgate eval --oracle --split all    # sanity check the suite, no key needed
+uv run evalgate eval --per-category 2        # 28 conversations, one or two per category
+uv run evalgate eval --split train           # the full training split
 ```
 
-`evalgate eval` takes `--split train|heldout|all`, `--category`, `--limit`, `--runs` and `--concurrency`. Each run writes a folder under `runs/` with a markdown report, per-call results, and a full trace for every conversation.
+`eval` also takes `--category`, `--limit`, `--runs` and `--concurrency`. Each run writes a folder under `runs/` with a markdown report, per-call results, and a full trace of every conversation.
 
-SQLite by default. `make db` if you want Postgres.
+### Doing it for free
+
+I don't have a GPU or paid credits, so `.env.example` defaults to free tiers: Gemini for the agent and Groq for the simulated callers (no credit card for either). The catch is daily quotas, roughly 20 conversations a day with this setup. When a quota runs out, the run stops cleanly and prints the exact command to pick up where it left off the next day (`--resume runs/<folder>`), so the report fills in over a few days instead of crashing.
+
+The default model on a paid provider is an open-weight Qwen model on Together; swap the commented lines in `.env.example`.
+
+The Makefile has shortcuts (`make test`, `make chat`, `make eval`) if you have `make`.
