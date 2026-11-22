@@ -6,7 +6,9 @@ ScriptedLLM replays canned turns so the whole runtime is testable without networ
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -47,8 +49,10 @@ class LLM(Protocol):
 class OpenAICompatLLM:
     """Any OpenAI-compatible endpoint: Together, Groq, Gemini, Fireworks, vLLM, Ollama.
 
-    Rate limits (429) are retried with backoff by the SDK, honoring retry-after headers. If they
-    persist (for example a daily quota), openai.RateLimitError propagates to the caller.
+    Rate limits: free tiers have per-minute limits that the SDK's own short retries can't wait
+    out. On a 429 we wait as long as the provider asks (or up to a minute) and keep trying for
+    `rate_limit_patience_s`. If it is still limited after that, it is almost certainly a daily
+    quota, and openai.RateLimitError propagates (the eval runner then stops cleanly).
     """
 
     def __init__(
@@ -58,18 +62,64 @@ class OpenAICompatLLM:
         model: str,
         temperature: float = 0.2,
         timeout: float = 30,
-        max_retries: int = 6,
+        max_retries: int = 2,
+        reasoning_effort: str | None = None,
+        rate_limit_patience_s: float = 300,
+        rate_limit_wait_cap_s: float = 60,
     ) -> None:
         from openai import AsyncOpenAI
 
         self.client = AsyncOpenAI(
             base_url=base_url, api_key=api_key, timeout=timeout, max_retries=max_retries
         )
+        self.base_url = base_url
         self.model = model
         self.temperature = temperature
+        self.reasoning_effort = reasoning_effort or None
+        self.patience = rate_limit_patience_s
+        self.wait_cap = rate_limit_wait_cap_s
         self._usage_supported = True
+        self.rate_limit_waits = 0
+
+    @staticmethod
+    def _suggested_wait(err) -> float | None:
+        """Seconds the provider asked us to wait, from headers or a Gemini-style body."""
+        resp = getattr(err, "response", None)
+        headers = getattr(resp, "headers", None) or {}
+        for h in ("retry-after", "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"):
+            v = headers.get(h)
+            if v:
+                m = re.match(r"^([\d.]+)(ms|s|m)?", str(v).strip())
+                if m:
+                    n = float(m.group(1))
+                    return n / 1000 if m.group(2) == "ms" else n * 60 if m.group(2) == "m" else n
+        m = re.search(r'retryDelay["\']?\s*[:=]\s*["\']?([\d.]+)s', str(getattr(err, "body", "")))
+        return float(m.group(1)) if m else None
 
     async def _create(self, messages: list[dict], tools: list[dict]):
+        from openai import RateLimitError
+
+        waited = 0.0
+        attempt = 0
+        while True:
+            try:
+                return await self._create_once(messages, tools)
+            except RateLimitError as e:
+                attempt += 1
+                wait = self._suggested_wait(e) or min(10 * 2 ** (attempt - 1), self.wait_cap)
+                wait = min(max(wait, 1.0), self.wait_cap)
+                if waited + wait > self.patience:
+                    raise RateLimitError(
+                        f"{self.model} @ {self.base_url} still rate limited after {waited:.0f}s "
+                        f"(likely a daily quota): {getattr(e, 'body', None) or e}",
+                        response=e.response,
+                        body=e.body,
+                    ) from e
+                self.rate_limit_waits += 1
+                await asyncio.sleep(wait)
+                waited += wait
+
+    async def _create_once(self, messages: list[dict], tools: list[dict]):
         from openai import BadRequestError
 
         kwargs = dict(
@@ -79,16 +129,21 @@ class OpenAICompatLLM:
             temperature=self.temperature,
             stream=True,
         )
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
         if self._usage_supported:
-            try:
-                return await self.client.chat.completions.create(
-                    **kwargs, stream_options={"include_usage": True}
-                )
-            except BadRequestError as e:
-                if "stream_options" not in str(e):
-                    raise
+            kwargs["stream_options"] = {"include_usage": True}
+        try:
+            return await self.client.chat.completions.create(**kwargs)
+        except BadRequestError as e:
+            msg = f"{e} {getattr(e, 'body', '')}"
+            if "stream_options" in msg and self._usage_supported:
                 self._usage_supported = False  # some providers reject it; skip token counts
-        return await self.client.chat.completions.create(**kwargs)
+            elif "reasoning_effort" in msg and self.reasoning_effort:
+                self.reasoning_effort = None  # not supported by this model; run without it
+            else:
+                raise
+            return await self._create_once(messages, tools)
 
     async def stream(self, messages: list[dict], tools: list[dict]) -> AsyncIterator[LLMEvent]:
         resp = await self._create(messages, tools)

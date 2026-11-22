@@ -114,7 +114,8 @@ async def run_eval(args: argparse.Namespace) -> None:
             i = sys.argv.index("--resume")
             again = sys.argv[1:i] + sys.argv[i + 2 :]
         print()
-        print("Stopped: the model provider's rate limit was hit (probably the daily quota).")
+        print("Stopped: a model provider's rate limit didn't clear after waiting.")
+        print(f"  {summary.get('rate_limit_error')}")
         print(f"{summary['remaining']} conversations left. When the quota resets, run:")
         print(f"  uv run evalgate {' '.join(again)} --resume {out}")
 

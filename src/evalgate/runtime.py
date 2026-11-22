@@ -22,6 +22,8 @@ def build_llm(settings: Settings) -> LLM:
         settings.llm_temperature,
         settings.llm_timeout_s,
         settings.llm_max_retries,
+        settings.llm_reasoning_effort,
+        settings.rate_limit_patience_s,
     )
 
 
@@ -36,6 +38,8 @@ def build_sim_llm(settings: Settings) -> LLM:
         settings.sim_temperature,
         settings.llm_timeout_s,
         settings.llm_max_retries,
+        settings.sim_reasoning_effort,
+        settings.rate_limit_patience_s,
     )
 
 

@@ -285,6 +285,7 @@ async def run_suite(
 
     sem = asyncio.Semaphore(concurrency or settings.eval_concurrency)
     stop = asyncio.Event()
+    stop_reason: list[str] = []
     new: list[RunResult] = []
     results_file = (out / "results.jsonl").open("a")
 
@@ -296,6 +297,7 @@ async def run_suite(
                 sc, version, agent_llm(sc), sim_llm(sc), settings, template, out, k
             )
         if r.error and r.error.startswith(RATE_LIMITED):
+            stop_reason.append(r.error)
             stop.set()
             Path(r.trace_file).unlink(missing_ok=True)  # noqa: ASYNC240
             return
@@ -319,6 +321,7 @@ async def run_suite(
     summary = summarize(results)
     summary["remaining"] = len(wanted) - len(results)
     summary["stopped_on_rate_limit"] = stop.is_set()
+    summary["rate_limit_error"] = stop_reason[0][:500] if stop_reason else None
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     (out / "report.md").write_text(render_report(summary, version))
     return results, out

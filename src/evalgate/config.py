@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     llm_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
     llm_temperature: float = 0.2
     llm_timeout_s: float = 30.0
-    llm_max_retries: int = 6
+    llm_max_retries: int = 2
+    llm_reasoning_effort: str = ""  # e.g. "low"; empty = provider default
+    rate_limit_patience_s: float = 300.0
 
     # Zero-setup default; point at Postgres from docker-compose for realistic runs.
     database_url: str = "sqlite+aiosqlite:///evalgate.db"
@@ -35,6 +37,7 @@ class Settings(BaseSettings):
     sim_api_key: str = ""
     sim_model: str = ""
     sim_temperature: float = 0.7
+    sim_reasoning_effort: str = "low"  # the caller is role-play, not puzzles; saves tokens
     max_caller_turns: int = 16
     conversation_timeout_s: float = 300.0
     eval_concurrency: int = 4
