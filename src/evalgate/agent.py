@@ -87,6 +87,12 @@ class AgentSession:
         """Handle one caller message; yields the agent's reply as text deltas."""
         loop = asyncio.get_running_loop()
         t0 = loop.time()
+        # Latency should measure the model, not time spent waiting out provider rate limits.
+        w0 = getattr(self.llm, "rate_limit_wait_s", 0.0)
+
+        def waited_ms() -> float:
+            return (getattr(self.llm, "rate_limit_wait_s", 0.0) - w0) * 1000
+
         self.state.turn_index += 1
         turn = self.state.turn_index
         self.messages.append({"role": "user", "content": user_text})
@@ -103,7 +109,7 @@ class AgentSession:
                 async for ev in self.llm.stream(self.messages, self.executor.schemas()):
                     if isinstance(ev, TextDelta):
                         if ttft is None:
-                            ttft = (loop.time() - t0) * 1000
+                            ttft = (loop.time() - t0) * 1000 - waited_ms()
                         spoken.append(ev.text)
                         yield ev.text
                     else:
@@ -153,7 +159,7 @@ class AgentSession:
             m = TurnMetrics(
                 turn,
                 ttft,
-                (loop.time() - t0) * 1000,
+                (loop.time() - t0) * 1000 - waited_ms(),
                 llm_calls,
                 tool_calls,
                 p_tok,

@@ -103,7 +103,7 @@ async def test_oracle_passes_every_scenario(suite, tmp_path):
         suite,
         version,
         OracleAgent,
-        lambda _: OracleCaller(),
+        OracleCaller,
         st,
         concurrency=16,
         out_dir=tmp_path / "oracle",
@@ -121,7 +121,7 @@ async def test_careless_agent_fails(suite, tmp_path):
         picked,
         version,
         CarelessAgent,
-        lambda _: OracleCaller(),
+        OracleCaller,
         st,
         concurrency=16,
         out_dir=tmp_path / "careless",
@@ -178,7 +178,7 @@ async def test_rate_limit_stops_run_and_resume_finishes_it(suite, tmp_path):
     version = AgentVersion(sops=load_library(), model="oracle")
     out = tmp_path / "run"
     results, _ = await run_suite(
-        picked, version, factory, lambda _: OracleCaller(), st, concurrency=1, out_dir=out
+        picked, version, factory, OracleCaller, st, concurrency=1, out_dir=out
     )
     summary = __import__("json").loads((out / "summary.json").read_text())
     assert summary["stopped_on_rate_limit"] and summary["remaining"] == 3
@@ -187,7 +187,7 @@ async def test_rate_limit_stops_run_and_resume_finishes_it(suite, tmp_path):
 
     quota["left"] = 100  # next day
     results, _ = await run_suite(
-        picked, version, factory, lambda _: OracleCaller(), st, concurrency=1, out_dir=out
+        picked, version, factory, OracleCaller, st, concurrency=1, out_dir=out
     )
     summary = __import__("json").loads((out / "summary.json").read_text())
     assert summary["remaining"] == 0 and not summary["stopped_on_rate_limit"]
@@ -199,13 +199,9 @@ async def test_resume_refuses_a_different_agent_version(suite, tmp_path):
     st = Settings(runs_dir=str(tmp_path))
     v1 = AgentVersion(sops=load_library(), model="oracle")
     v2 = v1.with_sop_text("tone", "Be brief.")
-    await run_suite(
-        suite[:1], v1, OracleAgent, lambda _: OracleCaller(), st, out_dir=tmp_path / "r"
-    )
+    await run_suite(suite[:1], v1, OracleAgent, OracleCaller, st, out_dir=tmp_path / "r")
     with pytest.raises(ValueError, match="use a new folder"):
-        await run_suite(
-            suite[:1], v2, OracleAgent, lambda _: OracleCaller(), st, out_dir=tmp_path / "r"
-        )
+        await run_suite(suite[:1], v2, OracleAgent, OracleCaller, st, out_dir=tmp_path / "r")
 
 
 def test_grader_catches_invented_customer_details(suite):

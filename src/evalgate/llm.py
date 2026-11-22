@@ -80,6 +80,7 @@ class OpenAICompatLLM:
         self.wait_cap = rate_limit_wait_cap_s
         self._usage_supported = True
         self.rate_limit_waits = 0
+        self.rate_limit_wait_s = 0.0  # time spent waiting on provider limits, not the model
 
     @staticmethod
     def _suggested_wait(err) -> float | None:
@@ -116,6 +117,7 @@ class OpenAICompatLLM:
                         body=e.body,
                     ) from e
                 self.rate_limit_waits += 1
+                self.rate_limit_wait_s += wait
                 await asyncio.sleep(wait)
                 waited += wait
 

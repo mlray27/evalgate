@@ -40,6 +40,7 @@ class RunOutcome:
     p9001: Booking | None = None  # the pre-existing appointment, after the call
     p9001_original_start: datetime | None = None
     new_customer_ids: list[str] = field(default_factory=list)  # customers matching expected phone
+    events: list[dict] = field(default_factory=list)  # the session trace, for process checks
 
 
 @dataclass
@@ -117,6 +118,8 @@ def grade(s: Scenario, r: RunOutcome, today: date) -> list[Check]:
         ok = any(SAFETY_RE.search(t) for t in r.agent_text)
         checks.append(Check("safety_instructions_given", ok))
 
+    checks.extend(process_checks(r.events))
+
     # Outcome-specific.
     if e.outcome in ("escalated", "no_booking"):
         checks.append(Check("no_booking_made", not active, "; ".join(map(_fmt, active))))
@@ -182,6 +185,114 @@ def grade(s: Scenario, r: RunOutcome, today: date) -> list[Check]:
         checks.append(Check("no_new_booking", not active, "; ".join(map(_fmt, active))))
 
     return checks
+
+
+# ---------------------------------------------------------------------------------------------
+# Process checks: how the agent got there, not just where it ended up. These catch failures the
+# database happened to absorb (e.g. a lookup on a number nobody said that just returned "not
+# found"). They are computed from the trace alone, so old runs can be re-scored offline.
+# ---------------------------------------------------------------------------------------------
+
+PROCESS_CHECKS = (
+    "no_unspoken_phone_lookup",
+    "no_invented_customer_details",
+    "no_premature_confirmation",
+)
+
+# "Your appointment is confirmed", "I have a repair scheduled for you", "you're all set", ...
+CLAIM_RE = re.compile(
+    r"\b(?:"
+    r"(?:is|are|has been|have been|now)\s+(?:all\s+)?(?:confirmed|scheduled|booked)"
+    r"|(?:i've|i have|we've|we have)\s+(?:\w+\s+){0,8}?(?:scheduled|booked|confirmed)"
+    r"|you(?:'re| are)\s+(?:all set|booked|confirmed|scheduled)"
+    r"|(?:appointment|booking|visit)\s+(?:is\s+)?(?:confirmed|booked)"
+    r")\b",
+    re.I,
+)
+COMMIT_TOOLS = ("confirm_booking", "confirm_reschedule", "confirm_cancellation")
+
+
+def _digits(text: str) -> str:
+    return re.sub(r"\D", "", text)
+
+
+def _words(text: str) -> str:
+    return " " + re.sub(r"[^a-z0-9]+", " ", text.lower()) + " "
+
+
+def process_checks(events: list[dict]) -> list[Check]:
+    said_by_turn: dict[int, str] = {}
+    for e in events:
+        if e["type"] == "user":
+            said_by_turn[e["turn"]] = e["text"]
+
+    def said_up_to(turn: int) -> str:
+        return " ".join(t for k, t in sorted(said_by_turn.items()) if k <= turn)
+
+    unspoken, invented, premature = [], [], []
+    committed_turns = {
+        e["turn"]
+        for e in events
+        if e["type"] == "tool" and e["name"] in COMMIT_TOOLS and e["result"].get("ok")
+    }
+    for e in events:
+        if e["type"] == "tool":
+            heard = said_up_to(e["turn"])
+            a = e.get("args") or {}
+            phone = _digits(str(a.get("phone", "")))[-7:]
+            if phone and phone not in _digits(heard):
+                unspoken.append(f"{e['name']}({a.get('phone')})")
+            if e["name"] in ("create_customer", "add_address"):
+                for key in ("city", "zip"):
+                    val = str(a.get(key, "")).strip()
+                    norm = _digits(val) if key == "zip" else _words(val).strip()
+                    hay = _digits(heard) if key == "zip" else _words(heard)
+                    if val and (not norm or norm not in hay):
+                        invented.append(f"{key}={val!r}")
+        elif e["type"] == "assistant":
+            m = CLAIM_RE.search(e["text"])
+            if m and not any(t <= e["turn"] for t in committed_turns):
+                premature.append(f"turn {e['turn']}: {m.group(0)!r}")
+    return [
+        Check("no_unspoken_phone_lookup", not unspoken, "; ".join(unspoken)),
+        Check("no_invented_customer_details", not invented, "; ".join(invented)),
+        Check("no_premature_confirmation", not premature, "; ".join(premature)),
+    ]
+
+
+# ---------------------------------------------------------------------------------------------
+# Simulator sanity. A failed run is only evidence against the agent if the caller played its
+# part. These flags mark runs where the simulated caller visibly went off-script; reports show
+# success with and without them so simulator noise can't masquerade as agent failure.
+# ---------------------------------------------------------------------------------------------
+
+SIM_JUNK_RE = re.compile(
+    r"no reply needed|supposed to respond|thank you for choosing|i've scheduled a technician"
+    r"|as an ai|\[(?:agent|system|caller)\]",
+    re.I,
+)
+SLOT_RE = re.compile(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) (\w+) (\d+)")
+
+
+def simulator_flags(s: Scenario, checks: list[Check], events: list[dict]) -> list[str]:
+    flags = []
+    caller = [e["text"] for e in events if e["type"] == "user"]
+    if any(SIM_JUNK_RE.search(t) for t in caller):
+        flags.append("caller_off_script")
+    failed = {c.name for c in checks if not c.passed}
+    if "slot_fits_availability" in failed:
+        # Did the caller itself name the out-of-window date it ended up with?
+        for e in events:
+            if e["type"] == "tool" and e["name"] in COMMIT_TOOLS and e["result"].get("ok"):
+                m = SLOT_RE.search(e["result"].get("summary", ""))
+                if not m:
+                    continue
+                _, month, day = m.groups()
+                pat = re.compile(rf"\b({month}\s+{day}|{day}(st|nd|rd|th))\b", re.I)
+                if any(pat.search(t) for t in caller):
+                    flags.append("caller_agreed_outside_its_availability")
+                    break
+    return flags
 
 
 def passed(checks: list[Check]) -> bool:

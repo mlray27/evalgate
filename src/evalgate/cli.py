@@ -65,6 +65,8 @@ async def run_eval(args: argparse.Namespace) -> None:
     from evalgate.scenarios import load_suite, select_scenarios
 
     settings = get_settings()
+    if args.sim_model:
+        settings.sim_model = args.sim_model
     ids = args.ids.split(",") if args.ids else None
     scenarios = select_scenarios(load_suite(), args.split, args.category, ids, args.per_category)
     if args.limit:
@@ -75,7 +77,7 @@ async def run_eval(args: argparse.Namespace) -> None:
     if args.oracle:
         from evalgate.oracle import OracleAgent, OracleCaller
 
-        agent_factory, sim_factory = OracleAgent, lambda _: OracleCaller()
+        agent_factory, sim_factory = OracleAgent, OracleCaller
     else:
         agent_llm, sim_llm = build_llm(settings), build_sim_llm(settings)
         agent_factory, sim_factory = (lambda _: agent_llm), (lambda _: sim_llm)
@@ -90,7 +92,8 @@ async def run_eval(args: argparse.Namespace) -> None:
 
     out_dir = Path(args.resume) if args.resume else None
     agent_model = "oracle" if args.oracle else settings.llm_model
-    print(f"{total} conversations, agent {version.id}, model {agent_model}")
+    sim_model = "oracle" if args.oracle else (settings.sim_model or settings.llm_model)
+    print(f"{total} conversations, agent {version.id}, model {agent_model}, caller {sim_model}")
     if out_dir:
         print(f"resuming into {out_dir}")
     _, out = await run_suite(
@@ -213,6 +216,9 @@ def main() -> None:
     e.add_argument("--limit", type=int, help="only the first N matching scenarios")
     e.add_argument("--per-category", type=int, help="first N scenarios from each category")
     e.add_argument("--resume", metavar="RUN_DIR", help="continue a stopped run in this folder")
+    e.add_argument("--sim-model", help="override the simulated caller's model for this run")
+    r = sub.add_parser("rescore", help="recompute trace-based checks for a finished run, offline")
+    r.add_argument("run_dir")
     e.add_argument("--runs", type=int, default=1, help="runs per scenario")
     e.add_argument("--concurrency", type=int)
     e.add_argument(
@@ -243,6 +249,17 @@ def _dispatch(args: argparse.Namespace) -> None:
         print(f"wrote {len(suite)} scenarios")
     elif args.cmd == "eval":
         asyncio.run(run_eval(args))
+    elif args.cmd == "rescore":
+        from pathlib import Path
+
+        from evalgate.evals import rescore
+
+        s = rescore(Path(args.run_dir))
+        print(
+            f"success {s['success_rate']}% (outcome checks only {s['outcome_only_success_rate']}%"
+            f", excluding simulator-flagged runs {s['success_rate_excl_sim_flagged']}%)"
+        )
+        print(f"report: {Path(args.run_dir) / 'report.md'}")
     else:
         sys.exit(2)
 

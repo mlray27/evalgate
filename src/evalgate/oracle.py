@@ -15,6 +15,7 @@ from evalgate.scenarios import Scenario
 from evalgate.simulator import HANGUP
 
 DONE_PHRASE = "You're all set"
+ASK_DETAILS = "Can I get your full name, phone number, and address?"
 
 
 class _PlanLLM:
@@ -111,6 +112,7 @@ class OracleAgent(_PlanLLM):
         if e.customer_id:
             cid, aid = e.customer_id, e.address_id
         else:
+            yield Step(text=ASK_DETAILS)
             yield Step(
                 calls=[
                     (
@@ -159,13 +161,25 @@ class OracleAgent(_PlanLLM):
 
 
 class OracleCaller:
-    """Agrees to every read-back and hangs up when the agent wraps up."""
+    """Agrees to every read-back, gives its details when asked, hangs up when the agent wraps up."""
 
     model = "oracle-caller"
 
+    def __init__(self, scenario: Scenario | None = None) -> None:
+        self.s = scenario
+
     async def stream(self, messages: list[dict], tools: list[dict]) -> AsyncIterator[LLMEvent]:
         agent = messages[-1]["content"]
-        text = f"Great, thanks. Bye. {HANGUP}" if DONE_PHRASE in agent else "Yes, that works."
+        e = self.s.expected if self.s else None
+        if DONE_PHRASE in agent:
+            text = f"Great, thanks. Bye. {HANGUP}"
+        elif ASK_DETAILS in agent and e and e.new_customer_phone:
+            text = (
+                f"I'm {e.new_customer_name}, {e.new_customer_phone}, {e.new_address_line1}, "
+                f"{e.new_address_city} {e.new_address_zip}."
+            )
+        else:
+            text = "Yes, that works."
         yield TextDelta(text)
         yield Completion(text)
 

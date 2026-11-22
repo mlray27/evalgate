@@ -34,6 +34,10 @@ An LLM plays the caller. It gets a private brief (who they are, what's actually 
 
 Scoring is deterministic wherever possible. After each call I check the database: was the right service booked, for the right customer, at the right address, in a slot the caller can actually make, exactly once? Did it escalate when it should have and not when it shouldn't? The only text checks are a regex for dollar amounts (every price it says has to come from the price policy) and one for "get out of the house" on gas calls.
 
+Outcomes aren't enough on their own, though. In the first baseline the agent hit the right booking 96% of the time, but along the way it looked up phone numbers nobody had said, tried to create accounts with a made-up city and zip, and told callers "I have that scheduled for you" before anything was booked. The database happened to absorb those, so they looked like passes. So there are also three process checks, computed from the trace, that count toward pass/fail: no tool call uses a phone number the caller never said, no account gets details the caller never gave, and the agent never claims a booking before it actually went through. With those, the same baseline scores 39%, which is a much more honest starting point. `evalgate rescore runs/<folder>` reapplies the trace-based checks to an old run without any API calls.
+
+The simulated caller can mess up too (once it agreed to a date outside its own availability), so runs where the caller visibly went off-script get flagged, and the report shows the success rate with and without them.
+
 I didn't want to trust the graders blindly, so there are two sanity checks:
 
 - an **oracle agent** that cheats by reading the ground truth. It scores 100%, so every scenario is actually passable.

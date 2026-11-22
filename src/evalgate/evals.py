@@ -23,12 +23,21 @@ from sqlalchemy import select
 from evalgate.agent import AgentSession
 from evalgate.config import Settings
 from evalgate.db import Address, Appointment, Customer, Slot, make_engine, make_sessionmaker
-from evalgate.graders import Booking, RunOutcome, grade, passed
+from evalgate.graders import (
+    PROCESS_CHECKS,
+    Booking,
+    Check,
+    RunOutcome,
+    grade,
+    passed,
+    process_checks,
+    simulator_flags,
+)
 from evalgate.llm import LLM
 from evalgate.scenarios import Scenario
 from evalgate.seed import seed
 from evalgate.simulator import CallerSimulator
-from evalgate.sops import AgentVersion
+from evalgate.sops import AgentVersion, load_library
 from evalgate.tools import ToolFaults, _digits
 
 LLMFactory = Callable[[Scenario], LLM]
@@ -53,6 +62,7 @@ class RunResult:
     sim_prompt_tokens: int = 0
     sim_completion_tokens: int = 0
     sim_ignored_hangups: int = 0
+    sim_flags: list[str] = field(default_factory=list)
     duration_s: float = 0.0
     error: str | None = None
     trace_file: str = ""
@@ -185,8 +195,10 @@ async def run_conversation(
         p9001=snap["p9001"],
         p9001_original_start=snap["p9001_original_start"],
         new_customer_ids=snap["new_customer_ids"],
+        events=session.trace.events,
     )
     checks = grade(scenario, outcome, settings.today)
+    flags = simulator_flags(scenario, checks, session.trace.events)
     await engine.dispose()
     db_path.unlink(missing_ok=True)
 
@@ -199,6 +211,7 @@ async def run_conversation(
         version_id=version.id,
         success=passed(checks) and error is None,
         checks=[asdict(c) for c in checks],
+        sim_flags=flags,
         caller_turns=sum(1 for t in transcript if t["role"] == "caller"),
         tool_calls=len(tools),
         guard_denials=sum(1 for t in tools if t["result"].get("error") == "guard_denied"),
@@ -327,6 +340,39 @@ async def run_suite(
     return results, out
 
 
+def rescore(out: Path, version_note: str = "") -> dict:
+    """Recompute process checks and simulator flags for a finished run, from its saved traces.
+
+    Outcome checks need the final database state, which isn't in the trace, so those are kept as
+    recorded. Use this after adding or changing a trace-based check: no API calls, no re-running.
+    """
+    traces = {p.stem: json.loads(p.read_text()) for p in (out / "traces").glob("*.json")}
+    results = []
+    for r in load_results(out):
+        t = traces.get(f"{r.scenario_id}-r{r.run}")
+        if t is None:
+            results.append(r)
+            continue
+        scenario = Scenario.model_validate(t["scenario"])
+        events = t["trace"]["events"]
+        kept = [Check(**c) for c in r.checks if c["name"] not in PROCESS_CHECKS]
+        checks = kept + process_checks(events)
+        r.checks = [asdict(c) for c in checks]
+        r.sim_flags = simulator_flags(scenario, checks, events)
+        r.success = passed(checks) and r.error is None
+        results.append(r)
+    backup = out / "results.before-rescore.jsonl"
+    if not backup.exists():
+        shutil.copy(out / "results.jsonl", backup)
+    (out / "results.jsonl").write_text("".join(json.dumps(asdict(r)) + "\n" for r in results))
+    summary = summarize(results)
+    (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    v = json.loads((out / "version.json").read_text())
+    version = AgentVersion(sops=load_library(), model=v["model"], id=v["id"], note=version_note)
+    (out / "report.md").write_text(render_report(summary, version))
+    return summary
+
+
 # ---------------------------------------------------------------------------------------------
 # Summary + report
 # ---------------------------------------------------------------------------------------------
@@ -363,6 +409,15 @@ def summarize(results: list[RunResult]) -> dict:
         "scenarios": len(by_scenario),
         "runs_per_scenario": runs,
         "success_rate": _pct([r.success for r in results]),
+        "success_rate_excl_sim_flagged": _pct([r.success for r in results if not r.sim_flags]),
+        "sim_flagged": sum(bool(r.sim_flags) for r in results),
+        "outcome_only_success_rate": _pct(
+            [
+                r.error is None
+                and all(c["passed"] for c in r.checks if c["name"] not in PROCESS_CHECKS)
+                for r in results
+            ]
+        ),
         "pass_all_k": _pct([all(v) for v in by_scenario.values()]),
         "by_split": {k: _pct(v) for k, v in sorted(by_split.items())},
         "by_category": {k: {"success": _pct(v), "n": len(v)} for k, v in sorted(by_cat.items())},
@@ -391,6 +446,7 @@ def summarize(results: list[RunResult]) -> dict:
                     f"{c['name']}: {c['detail']}".rstrip(": ") for c in r.checks if not c["passed"]
                 ],
                 "error": r.error,
+                "sim_flags": r.sim_flags,
             }
             for r in results
             if not r.success
@@ -414,7 +470,10 @@ def render_report(s: dict, version: AgentVersion) -> str:
             else []
         ),
         "",
-        f"- **Success rate:** {s['success_rate']}%",
+        f"- **Success rate:** {s['success_rate']}% "
+        f"(outcome checks only: {s.get('outcome_only_success_rate', s['success_rate'])}%)",
+        f"- **Excluding {s.get('sim_flagged', 0)} run(s) where the simulated caller went "
+        f"off-script:** {s.get('success_rate_excl_sim_flagged', s['success_rate'])}%",
         f"- **pass^k (all runs of a scenario pass):** {s['pass_all_k']}%",
         "- **By split:** " + ", ".join(f"{k} {v}%" for k, v in s["by_split"].items()),
         f"- **TTFT:** p50 {s['ttft_ms_p50']} ms, p95 {s['ttft_ms_p95']} ms",
@@ -441,6 +500,8 @@ def render_report(s: dict, version: AgentVersion) -> str:
         why = "; ".join(f["failed"]) or ""
         if f["error"]:
             why = f"{why}; error {f['error']}".strip("; ")
+        if f.get("sim_flags"):
+            why += f" [simulator: {', '.join(f['sim_flags'])}]"
         lines.append(f"- `{f['scenario']}` run {f['run']}: {why}")
     if not s["failures"]:
         lines.append("None.")
