@@ -8,7 +8,7 @@ The full spec is in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
 
 ## What's built so far
 
-The agent, the harness around it, and the eval suite. The improvement loop is next.
+The agent, the harness around it, the eval suite, and the improvement loop (an Agent Manager plus a trust gate). What's still missing is real numbers from running the loop end to end; that's in progress on free-tier APIs, so it's slow.
 
 The agent is one model with the whole conversation and ~25 company procedures in context. No router, no handoffs between sub-agents. I went this way because every handoff loses context, and callers change their minds constantly ("wait, it's the water heater, not the furnace").
 
@@ -44,6 +44,26 @@ I didn't want to trust the graders blindly, so there are two sanity checks:
 - a **careless agent** that books a furnace repair no matter what. It scores 0%, so the graders catch wrong behavior.
 
 The scenarios are generated from templates against the seed data rather than written by an LLM, so the expected answers are right by construction. A test makes sure nobody hand-edits them.
+
+## The improvement loop
+
+This is the part the whole project is for.
+
+1. **The Agent Manager** reads the failures from a run, groups them by which check failed, and takes the most common one. It gets the conversations, the tool calls, and a plain-English description of the check. It does not get the scenario briefs (the ground truth), the held-out results, or the grader code. Basically, what a production monitoring system would actually have.
+2. It proposes exactly one change: edit one procedure or add one. That becomes a new, immutable agent version with a pointer to its parent. The live version never gets edited in place.
+3. Before anything is tested, the proposal gets checked. Bad edits (wrong id, empty, no change) are thrown out. Proposals that mention names, phone numbers or addresses from the failing calls get flagged, because that's the Manager memorizing examples instead of fixing a behavior. So do proposals that talk about tests or evaluation.
+4. The candidate runs on the same scenarios as the baseline, and **the trust gate** compares them pair by pair. It cares most about the held-out split, since the Manager never saw those callers. It promotes only if held-out success clearly goes up, almost nothing that used to pass now fails, train and held-out improve by similar amounts, and there are no flags. It rejects anything that makes held-out worse or breaks a safety scenario (gas leaks, no-heat emergencies). Everything in between goes to a human. Every report includes a sign test, because with this many calls a few points of difference can easily be noise.
+
+The Manager can only write procedure text. It can't touch the scenarios, the graders, or the gate, and it can't approve its own change.
+
+There's an end-to-end test of the whole loop with scripted models: an agent with one bad habit (saying "I have that scheduled" before booking), a Manager that proposes the fix, and a gate that promotes it. Plus a version where the Manager's fix names a specific customer, which gets flagged and sent to a human instead.
+
+```bash
+uv run evalgate eval --split all --per-category 2                 # baseline, train + held-out
+uv run evalgate propose runs/<baseline>                           # Manager proposes a fix
+uv run evalgate eval --split all --per-category 2 --version versions/<candidate>.json
+uv run evalgate compare runs/<baseline> runs/<candidate>          # trust gate decision
+```
 
 ## Running it
 

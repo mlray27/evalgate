@@ -60,3 +60,40 @@ class AgentVersion:
             SOP(**{**s.__dict__, "text": new_text}) if s.id == sop_id else s for s in self.sops
         )
         return AgentVersion(sops=sops, model=self.model, parent_id=self.id, note=note)
+
+    def with_new_sop(self, sop: SOP, note: str = "") -> "AgentVersion":
+        if sop.id in {s.id for s in self.sops}:
+            raise ValueError(f"SOP {sop.id} already exists")
+        return AgentVersion(sops=(*self.sops, sop), model=self.model, parent_id=self.id, note=note)
+
+    def to_json(self) -> dict:
+        return {
+            "id": self.id,
+            "parent_id": self.parent_id,
+            "model": self.model,
+            "note": self.note,
+            "sops": [s.__dict__ for s in self.sops],
+        }
+
+    @classmethod
+    def from_json(cls, d: dict) -> "AgentVersion":
+        v = cls(
+            sops=tuple(SOP(**s) for s in d["sops"]),
+            model=d["model"],
+            parent_id=d.get("parent_id"),
+            note=d.get("note", ""),
+        )
+        if d.get("id") and d["id"] != v.id:
+            raise ValueError(f"version file says {d['id']} but its contents hash to {v.id}")
+        return v
+
+    @classmethod
+    def load(cls, path: str | Path) -> "AgentVersion":
+        return cls.from_json(json.loads(Path(path).read_text()))
+
+    def save(self, directory: str | Path = "versions") -> Path:
+        d = Path(directory)
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{self.id}.json"
+        p.write_text(json.dumps(self.to_json(), indent=1))
+        return p

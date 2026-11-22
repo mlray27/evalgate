@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     eval_concurrency: int = 4
     runs_dir: str = "runs"
 
+    # Agent Manager. Defaults to the agent's endpoint and model if left empty.
+    manager_base_url: str = ""
+    manager_api_key: str = ""
+    manager_model: str = ""
+    manager_temperature: float = 0.3
+
 
 @lru_cache
 def get_settings() -> Settings:

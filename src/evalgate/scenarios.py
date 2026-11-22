@@ -91,11 +91,13 @@ def select_scenarios(
     if ids:
         out = [s for s in out if s.id in ids]
     if per_category:
-        seen: dict[str, int] = {}
+        # Per (split, category), so `--split all --per-category 2` gives 2 train + 2 held-out each.
+        seen: dict[tuple[str, str], int] = {}
         picked = []
         for s in sorted(out, key=lambda x: x.id):
-            if seen.get(s.category, 0) < per_category:
-                seen[s.category] = seen.get(s.category, 0) + 1
+            key = (s.split, s.category)
+            if seen.get(key, 0) < per_category:
+                seen[key] = seen.get(key, 0) + 1
                 picked.append(s)
         out = picked
     return out

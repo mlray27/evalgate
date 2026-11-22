@@ -43,6 +43,22 @@ def build_sim_llm(settings: Settings) -> LLM:
     )
 
 
+def build_manager_llm(settings: Settings) -> LLM:
+    key = settings.manager_api_key or settings.llm_api_key
+    if not key:
+        raise RuntimeError("Set EVALGATE_LLM_API_KEY (or EVALGATE_MANAGER_API_KEY).")
+    return OpenAICompatLLM(
+        settings.manager_base_url or settings.llm_base_url,
+        key,
+        settings.manager_model or settings.llm_model,
+        settings.manager_temperature,
+        60.0,
+        settings.llm_max_retries,
+        settings.llm_reasoning_effort,
+        settings.rate_limit_patience_s,
+    )
+
+
 def default_version(settings: Settings) -> AgentVersion:
     return AgentVersion(sops=load_library(), model=settings.llm_model, note="baseline")
 

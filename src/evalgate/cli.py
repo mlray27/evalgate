@@ -10,6 +10,7 @@ from evalgate.agent import AgentSession
 from evalgate.config import get_settings
 from evalgate.runtime import build_llm, default_version, open_db
 from evalgate.seed import seed
+from evalgate.sops import AgentVersion
 
 
 async def chat(show_tools: bool) -> None:
@@ -73,7 +74,7 @@ async def run_eval(args: argparse.Namespace) -> None:
         scenarios = scenarios[: args.limit]
     if not scenarios:
         sys.exit("no scenarios match")
-    version = default_version(settings)
+    version = AgentVersion.load(args.version) if args.version else default_version(settings)
     if args.oracle:
         from evalgate.oracle import OracleAgent, OracleCaller
 
@@ -210,6 +211,60 @@ async def check() -> None:
     print("\nall good" if ok else "\nfix the problems above, then run this again")
 
 
+async def run_propose(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    from evalgate.manager import cluster_failures, diff, propose
+    from evalgate.runtime import build_manager_llm
+
+    run_dir = Path(args.run_dir)
+    version = AgentVersion.load(args.version or run_dir / "version.json")
+    clusters = cluster_failures(run_dir)
+    if not clusters:
+        sys.exit("no training-split failures in that run: nothing to fix")
+    print("Training-split failures by check:")
+    for c in clusters:
+        print(f"  {c.count:3d}  {c.check}")
+    p, cand, cluster = await propose(
+        run_dir, version, build_manager_llm(get_settings()), args.check
+    )
+    print(f"\nWorking on: {cluster.check} ({cluster.count} conversations)")
+    if p.errors:
+        print("Proposal rejected before testing:")
+        for e in p.errors:
+            print(f"  - {e}")
+        return
+    print(f"Proposal: {p.action} {p.sop_id}. {p.rationale}\n")
+    print(diff(version, p) if p.action == "edit" else f"+ [{p.sop_id}] {p.title}\n{p.new_text}")
+    for f in p.flags:
+        print(f"WARNING: {f}")
+    vfile = Path("versions") / f"{cand.id}.json"
+    print(f"\nSaved candidate {cand.id} to {vfile}. Test it on the same scenarios as the baseline:")
+    print(f"  uv run evalgate eval <same options as the baseline> --version {vfile}")
+    print(f"  uv run evalgate compare {run_dir} runs\\<the candidate's run folder>")
+
+
+def run_compare(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    from evalgate.gate import compare_runs
+
+    cmp, decision, out = compare_runs(Path(args.base_run), Path(args.candidate_run))
+    held, train = cmp["heldout"], cmp["train"]
+    print(
+        f"train    {train.base_rate}% -> {train.cand_rate}% ({train.delta_pp:+} pp, "
+        f"{len(train.fixed)} fixed, {len(train.broken)} broken, n={train.n})"
+    )
+    print(
+        f"held-out {held.base_rate}% -> {held.cand_rate}% ({held.delta_pp:+} pp, "
+        f"{len(held.fixed)} fixed, {len(held.broken)} broken, n={held.n})"
+    )
+    print(f"\nDecision: {decision['decision'].upper()}")
+    for r in decision["reasons"]:
+        print(f"  - {r}")
+    print(f"\nreport: {out}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="evalgate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -226,6 +281,14 @@ def main() -> None:
     e.add_argument("--per-category", type=int, help="first N scenarios from each category")
     e.add_argument("--resume", metavar="RUN_DIR", help="continue a stopped run in this folder")
     e.add_argument("--sim-model", help="override the simulated caller's model for this run")
+    e.add_argument("--version", help="agent version file to run (default: the built-in procedures)")
+    pr = sub.add_parser("propose", help="Agent Manager: propose one procedure fix from a run")
+    pr.add_argument("run_dir")
+    pr.add_argument("--check", help="work on this failed check instead of the most common one")
+    pr.add_argument("--version", help="version the run used (default: read from the run folder)")
+    cp = sub.add_parser("compare", help="trust gate: compare a candidate run against a baseline")
+    cp.add_argument("base_run")
+    cp.add_argument("candidate_run")
     r = sub.add_parser("rescore", help="recompute trace-based checks for a finished run, offline")
     r.add_argument("run_dir")
     e.add_argument("--runs", type=int, default=1, help="runs per scenario")
@@ -263,6 +326,10 @@ def _dispatch(args: argparse.Namespace) -> None:
             if awake:
                 print("(keeping the computer awake until this run finishes)")
             asyncio.run(run_eval(args))
+    elif args.cmd == "propose":
+        asyncio.run(run_propose(args))
+    elif args.cmd == "compare":
+        run_compare(args)
     elif args.cmd == "rescore":
         from pathlib import Path
 
