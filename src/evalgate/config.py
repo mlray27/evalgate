@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     llm_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
     llm_temperature: float = 0.2
     llm_timeout_s: float = 30.0
-    llm_max_retries: int = 2
+    llm_max_retries: int = 4  # SDK retries for connection errors and 5xx
     llm_reasoning_effort: str = ""  # e.g. "low"; empty = provider default
     rate_limit_patience_s: float = 300.0
 
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     sim_temperature: float = 0.7
     sim_reasoning_effort: str = "low"  # the caller is role-play, not puzzles; saves tokens
     max_caller_turns: int = 16
-    conversation_timeout_s: float = 300.0
+    conversation_timeout_s: float = 1200.0  # rate-limit waits can take minutes
     eval_concurrency: int = 4
     runs_dir: str = "runs"
 

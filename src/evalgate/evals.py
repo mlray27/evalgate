@@ -42,6 +42,11 @@ from evalgate.tools import ToolFaults, _digits
 
 LLMFactory = Callable[[Scenario], LLM]
 RATE_LIMITED = "rate_limited"
+# Failures of the plumbing, not the agent: network drops, provider 5xx, stalled calls. These runs
+# are not recorded (so --resume redoes them) and never count against the agent.
+INFRA = "infra_error"
+INFRA_EXCEPTIONS = ("APIConnectionError", "APITimeoutError", "InternalServerError")
+MAX_CONSECUTIVE_INFRA = 3
 
 
 @dataclass
@@ -177,12 +182,13 @@ async def run_conversation(
     try:
         await asyncio.wait_for(converse(), settings.conversation_timeout_s)
     except TimeoutError:
-        hit_turn_limit = True
-        error = "conversation_timeout"
+        error = f"{INFRA}: conversation took longer than {settings.conversation_timeout_s:.0f}s"
     except Exception as e:  # a crashed run is a failed run, never a silent skip
         error = f"{type(e).__name__}: {getattr(e, 'body', None) or e}"
         if type(e).__name__ == "RateLimitError":
             error = f"{RATE_LIMITED}: {e}"
+        elif type(e).__name__ in INFRA_EXCEPTIONS or getattr(e, "status_code", 0) >= 500:
+            error = f"{INFRA}: {error}"
 
     snap = await _snapshot(sm, scenario, session, p9001_start)
     outcome = RunOutcome(
@@ -299,6 +305,8 @@ async def run_suite(
     sem = asyncio.Semaphore(concurrency or settings.eval_concurrency)
     stop = asyncio.Event()
     stop_reason: list[str] = []
+    infra: list[str] = []
+    consecutive_infra = [0]
     new: list[RunResult] = []
     results_file = (out / "results.jsonl").open("a")
 
@@ -314,6 +322,19 @@ async def run_suite(
             stop.set()
             Path(r.trace_file).unlink(missing_ok=True)  # noqa: ASYNC240
             return
+        if r.error and r.error.startswith(INFRA):
+            infra.append(r.error)
+            consecutive_infra[0] += 1
+            Path(r.trace_file).unlink(missing_ok=True)  # noqa: ASYNC240
+            if consecutive_infra[0] >= MAX_CONSECUTIVE_INFRA:
+                stop_reason.append(
+                    f"{consecutive_infra[0]} infrastructure errors in a row: {r.error}"
+                )
+                stop.set()
+            if progress:
+                progress(r)
+            return
+        consecutive_infra[0] = 0
         new.append(r)
         results_file.write(json.dumps(asdict(r)) + "\n")
         results_file.flush()
@@ -334,6 +355,7 @@ async def run_suite(
     summary = summarize(results)
     summary["remaining"] = len(wanted) - len(results)
     summary["stopped_on_rate_limit"] = stop.is_set()
+    summary["infra_errors_skipped"] = len(infra)
     summary["rate_limit_error"] = stop_reason[0][:500] if stop_reason else None
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     (out / "report.md").write_text(render_report(summary, version))
@@ -464,7 +486,7 @@ def render_report(s: dict, version: AgentVersion) -> str:
         *(
             [
                 f"> **Partial run:** {s['remaining']} conversations still to go "
-                f"(stopped on a provider rate limit; rerun with --resume)."
+                f"(rate limit or infrastructure errors; rerun with --resume)."
             ]
             if s.get("remaining")
             else []

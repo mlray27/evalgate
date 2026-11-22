@@ -295,3 +295,42 @@ def test_simulator_knows_the_date(suite):
     p = caller_system_prompt(suite[0], "Co", date(2026, 1, 12))
     assert "Today is Monday January 12, 2026" in p
     assert "ONLY the customer" in p
+
+
+async def test_infra_errors_are_not_counted_and_get_redone(suite, tmp_path):
+    """Network drops are the plumbing's fault, not the agent's: skip them, redo on resume."""
+    import httpx
+    from openai import APIConnectionError
+
+    from evalgate.evals import load_results
+
+    picked = [s for s in suite if s.category == "standard_repair"][:3]
+    flaky = {picked[1].id}
+
+    class FlakyAgent(OracleAgent):
+        async def stream(self, messages, tools):
+            if self.s.id in flaky:
+                raise APIConnectionError(request=httpx.Request("POST", "http://x"))
+            async for ev in super().stream(messages, tools):
+                yield ev
+
+    st = Settings(runs_dir=str(tmp_path))
+    version = AgentVersion(sops=load_library(), model="oracle")
+    out = tmp_path / "run"
+    results, _ = await run_suite(picked, version, FlakyAgent, OracleCaller, st, out_dir=out)
+    summary = __import__("json").loads((out / "summary.json").read_text())
+    assert summary["infra_errors_skipped"] == 1 and summary["remaining"] == 1
+    assert len(results) == 2 and all(r.success for r in results)
+
+    flaky.clear()  # network is back
+    results, _ = await run_suite(picked, version, FlakyAgent, OracleCaller, st, out_dir=out)
+    assert len(load_results(out)) == 3 and all(r.success for r in results)
+
+
+def test_this_week_includes_today(suite):
+    from datetime import date
+
+    s = next(
+        x for x in suite if x.availability and x.availability.phrase == "any afternoon this week"
+    )
+    assert s.availability.contains(date(2026, 1, 12), 13)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -117,8 +118,11 @@ class OpenAICompatLLM:
                         body=e.body,
                     ) from e
                 self.rate_limit_waits += 1
-                self.rate_limit_wait_s += wait
-                await asyncio.sleep(wait)
+                t0 = time.monotonic()
+                try:
+                    await asyncio.sleep(wait)
+                finally:  # count time actually waited, even if the wait was cancelled
+                    self.rate_limit_wait_s += time.monotonic() - t0
                 waited += wait
 
     async def _create_once(self, messages: list[dict], tools: list[dict]):

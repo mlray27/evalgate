@@ -87,6 +87,9 @@ async def run_eval(args: argparse.Namespace) -> None:
     def progress(r) -> None:
         nonlocal done
         done += 1
+        if r.error and r.error.startswith("infra_error"):
+            print(f"[skip] {r.scenario_id} r{r.run}: {r.error[:120]} (will be redone on --resume)")
+            return
         mark = "pass" if r.success else "FAIL " + ",".join(r.failed_checks or [r.error or ""])
         print(f"[{done}] {r.scenario_id} r{r.run}: {mark}", flush=True)
 
@@ -111,15 +114,21 @@ async def run_eval(args: argparse.Namespace) -> None:
     print((out / "report.md").read_text().split("## By category")[0])
     print(f"full report: {out / 'report.md'}")
     summary = json.loads((out / "summary.json").read_text())
-    if summary.get("stopped_on_rate_limit"):
-        again = [a for a in sys.argv[1:] if not a.startswith("--resume")]
-        if "--resume" in sys.argv:
-            i = sys.argv.index("--resume")
-            again = sys.argv[1:i] + sys.argv[i + 2 :]
+    if summary.get("remaining"):
+        again = sys.argv[1:]
+        if "--resume" in again:
+            k = again.index("--resume")
+            again = again[:k] + again[k + 2 :]
         print()
-        print("Stopped: a model provider's rate limit didn't clear after waiting.")
-        print(f"  {summary.get('rate_limit_error')}")
-        print(f"{summary['remaining']} conversations left. When the quota resets, run:")
+        if summary.get("stopped_on_rate_limit"):
+            print("Stopped early:")
+            print(f"  {summary.get('rate_limit_error')}")
+        if summary.get("infra_errors_skipped"):
+            print(
+                f"{summary['infra_errors_skipped']} conversation(s) hit network or provider "
+                f"errors and were not counted."
+            )
+        print(f"{summary['remaining']} conversations left. To finish them, run:")
         print(f"  uv run evalgate {' '.join(again)} --resume {out}")
 
 

@@ -203,7 +203,11 @@ def availability_templates(today: date) -> list[Availability]:
         ),
         Availability(earliest=d(5), latest=d(5), time_of_day="any", phrase="Saturday, any time"),
         Availability(
-            earliest=d(1), latest=d(5), time_of_day="afternoon", phrase="any afternoon this week"
+            # "this week" includes today when people say it, so the window does too.
+            earliest=d(0),
+            latest=d(5),
+            time_of_day="afternoon",
+            phrase="any afternoon this week",
         ),
         Availability(
             earliest=d(7), latest=d(11), time_of_day="morning", phrase="a weekday morning next week"
