@@ -257,7 +257,12 @@ def _dispatch(args: argparse.Namespace) -> None:
         suite = generate(get_settings())
         print(f"wrote {len(suite)} scenarios")
     elif args.cmd == "eval":
-        asyncio.run(run_eval(args))
+        from evalgate.keepawake import keep_awake
+
+        with keep_awake() as awake:
+            if awake:
+                print("(keeping the computer awake until this run finishes)")
+            asyncio.run(run_eval(args))
     elif args.cmd == "rescore":
         from pathlib import Path
 

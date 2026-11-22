@@ -334,3 +334,10 @@ def test_this_week_includes_today(suite):
         x for x in suite if x.availability and x.availability.phrase == "any afternoon this week"
     )
     assert s.availability.contains(date(2026, 1, 12), 13)
+
+
+def test_keep_awake_is_safe_everywhere():
+    from evalgate.keepawake import keep_awake
+
+    with keep_awake() as awake:
+        assert awake in (True, False)
