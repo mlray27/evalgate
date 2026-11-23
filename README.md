@@ -24,10 +24,10 @@ That's the question I wanted to poke at. So I built a phone agent for a made-up 
 
 ```bash
 uv sync
-cp .env.example .env               # free Gemini + Groq keys, see the file
-uv run evalgate check              # make sure keys and models work
-uv run pytest -q                   # no keys needed
-uv run evalgate chat --tools       # talk to the agent yourself
+cp .env.example .env              
+uv run evalgate check             
+uv run pytest -q               
+uv run evalgate chat --tools     
 
 uv run evalgate eval --split all --per-category 2                         # baseline
 uv run evalgate propose runs/<baseline>                                   # Manager proposes a fix
