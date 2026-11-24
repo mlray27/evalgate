@@ -132,7 +132,44 @@ def cluster_failures(run_dir: Path, split: str = "train") -> list[Cluster]:
     return clusters
 
 
-def manager_messages(version: AgentVersion, cluster: Cluster, max_examples: int = 4) -> list[dict]:
+def past_attempts(proposals_dir: Path, base_version: str) -> list[Proposal]:
+    """Earlier proposals against the same base version that the gate did not promote."""
+    out = []
+    for p in sorted(proposals_dir.glob("*.json")) if proposals_dir.exists() else []:
+        try:
+            prop = Proposal(**json.loads(p.read_text()))
+        except TypeError:
+            continue
+        if prop.base_version == base_version and prop.gate_decision in ("reject", "needs_human"):
+            out.append(prop)
+    return out
+
+
+def _broken_example(prop: Proposal) -> str:
+    """Opening of one conversation the candidate broke, so the Manager sees what went wrong."""
+    if not prop.candidate_run or not prop.broken:
+        return ""
+    path = Path(prop.candidate_run) / "traces" / f"{prop.broken[0]}.json"
+    if not path.exists():
+        return ""
+    t = json.loads(path.read_text())
+    lines = []
+    for e in t["trace"]["events"][:10]:
+        if e["type"] == "user":
+            lines.append(f"  caller: {e['text']}")
+        elif e["type"] == "assistant":
+            lines.append(f"  agent: {e['text']}")
+        elif e["type"] == "tool":
+            lines.append(f"  tool: {e['name']}({json.dumps(e.get('args'), default=str)[:120]})")
+    return "\n".join(lines)
+
+
+def manager_messages(
+    version: AgentVersion,
+    cluster: Cluster,
+    max_examples: int = 4,
+    history: list[Proposal] | None = None,
+) -> list[dict]:
     procedures = "\n\n".join(
         f"[{s.id}] (priority {s.priority}, {s.category}) {s.title}\n{s.text}"
         for s in sorted(version.sops, key=lambda s: s.priority)
@@ -163,11 +200,31 @@ def manager_messages(version: AgentVersion, cluster: Cluster, max_examples: int 
         '"priority": <1-6, for add>, "new_text": "<the full new procedure text>", '
         '"rationale": "<one sentence>"}'
     )
+    past = ""
+    for i, h in enumerate(history or [], 1):
+        worse = (
+            ", ".join(f"{k} ({v[0]} -> {v[1]} failing calls)" for k, v in h.regressions.items())
+            or "none recorded"
+        )
+        example = _broken_example(h)
+        past += (
+            f"\nPrevious attempt {i} ({h.action} {h.sop_id}), NOT shipped: {h.gate_decision}.\n"
+            f"Its text: {h.new_text}\n"
+            f"Why it failed: {'; '.join(h.gate_reasons)}\n"
+            f"Checks that got worse: {worse}\n"
+            + (f"A conversation it broke:\n{example}\n" if example else "")
+        )
+    if past:
+        past = (
+            "\nEARLIER ATTEMPTS THAT DID NOT WORK. Do not repeat them; work out why they "
+            "failed and try a different approach.\n" + past
+        )
     user = (
         f"Failed check: {cluster.check}\n"
         f"What it means: {CHECK_DESCRIPTIONS.get(cluster.check, cluster.check)}\n"
         f"It failed in {cluster.count} conversation(s). Examples:\n\n"
         + "\n\n".join(examples)
+        + f"\n{past}"
         + f"\n\nCURRENT PROCEDURES\n\n{procedures}"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -188,6 +245,12 @@ class Proposal:
     example_ids: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    # Filled in by `evalgate compare`, so later proposals can learn from this one.
+    gate_decision: str = ""
+    gate_reasons: list[str] = field(default_factory=list)
+    candidate_run: str = ""
+    regressions: dict = field(default_factory=dict)  # check -> [base failures, candidate failures]
+    broken: list[str] = field(default_factory=list)
 
 
 def parse_proposal(text: str) -> Proposal:
@@ -281,8 +344,9 @@ async def propose(
         raise ValueError("no failures to work on in the training split of this run")
     cluster = clusters[0]
 
+    history = past_attempts(proposals_dir, version.id)
     text: list[str] = []
-    async for ev in llm.stream(manager_messages(version, cluster), []):
+    async for ev in llm.stream(manager_messages(version, cluster, history=history), []):
         if isinstance(ev, TextDelta):
             text.append(ev.text)
         elif isinstance(ev, Completion) and not text:

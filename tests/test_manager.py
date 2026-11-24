@@ -200,3 +200,60 @@ async def test_compare_skips_scenarios_that_changed_between_runs(scenarios, tmp_
     cmp = compare(tmp_path / "a", tmp_path / "b")
     assert cmp["skipped_changed_scenarios"] == 1
     assert cmp["paired_conversations"] == len(scenarios) - 1
+
+
+def test_net_harm_is_rejected():
+    # The real first round: held-out flat, train lost 6 and gained 3.
+    cmp = cmp_(st_(25, 40, 28, 3, 6), st_(28, 25, 25, 2, 2))
+    d = decide(cmp)
+    assert d["decision"] == "reject"
+    assert any("net harm" in r for r in d["reasons"])
+
+
+class RecordingLLM:
+    model = "recording"
+
+    def __init__(self, reply):
+        self.reply, self.seen = reply, []
+
+    async def stream(self, messages, tools):
+        self.seen.append(messages)
+        yield Completion(self.reply)
+
+
+async def test_next_proposal_learns_from_a_rejected_one(scenarios, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    st = Settings(runs_dir=str(tmp_path))
+    base = AgentVersion(sops=load_library(), model="habit")
+    await run(base, scenarios, tmp_path / "base", st)
+
+    # Round 1: a useless edit that changes nothing the agent does.
+    useless = json.dumps(
+        {"action": "edit", "sop_id": "tone", "new_text": "Be calm and kind.", "rationale": "tone"}
+    )
+    _, cand, _ = await propose(tmp_path / "base", base, manager_reply(useless))
+    await run(cand, scenarios, tmp_path / "cand1", st)
+    _, decision, _ = compare_runs(tmp_path / "base", tmp_path / "cand1", tmp_path / "proposals")
+    assert decision["decision"] != "promote"
+    saved = json.loads((tmp_path / "proposals" / f"{cand.id}.json").read_text())
+    assert saved["gate_decision"] == decision["decision"] and saved["candidate_run"]
+
+    # Round 2: the Manager is shown what was tried and why it didn't ship.
+    rec = RecordingLLM(good_fix(base))
+    p2, cand2, _ = await propose(tmp_path / "base", base, rec)
+    prompt = rec.seen[0][1]["content"]
+    assert "EARLIER ATTEMPTS THAT DID NOT WORK" in prompt and "Be calm and kind." in prompt
+    assert cand2 is not None and cand2.id != cand.id
+
+
+def test_outcome_regression_is_rejected_even_on_already_failing_calls():
+    # Round 1 again: the candidate hung up on calls that already failed a process check, so they
+    # weren't "newly broken", but the right-customer/address checks went from 0 to 8 failures.
+    cmp = cmp_(st_(25, 40, 40, 3, 3), st_(28, 25, 25, 2, 2))
+    cmp["check_failures"] = {
+        "correct_address": {"base": 0, "candidate": 8},
+        "no_unspoken_phone_lookup": {"base": 16, "candidate": 6},
+    }
+    d = decide(cmp)
+    assert d["decision"] == "reject"
+    assert any("correct_address failed in 0 -> 8" in r for r in d["reasons"])

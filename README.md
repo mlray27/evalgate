@@ -18,7 +18,7 @@ That's the question I wanted to poke at. So I built a phone agent for a made-up 
 
 **Then the actual point: letting a model fix the agent.** The Agent Manager reads the training failures (transcripts and which check failed, never the ground truth or the held-out results) and proposes one procedure edit. That becomes a new version. The trust gate compares it to the old one, mostly on held-out callers the Manager never saw. It promotes, sends to a human, or rejects. It also flags fixes that mention specific customers, since that's memorizing, not fixing.
 
-**Where it's at.** The first proposal went after the "scheduled too early" habit. Early numbers say it didn't fix it: the agent still says "scheduled" during the read-back. Which is kind of the point of having a gate. Full comparison is running now (slowly, on free tiers).
+**First real result: the gate earned its keep.** The Manager's first fix went after the "scheduled too early" habit. It didn't fix it, and it made the agent hang up on callers who opened with something vague. A couple of metrics even looked better, since an agent that hangs up can't make tool-call mistakes. The per-check comparison caught it, and the gate now rejects that kind of change on its own. Details in [docs/RESULTS.md](docs/RESULTS.md). Round 2 is next, with the Manager seeing what went wrong last time.
 
 ## Running it
 

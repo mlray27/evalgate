@@ -27,6 +27,9 @@ class Thresholds:
     max_broken: int = 1
     max_generalization_gap_pp: float = 15.0
     min_heldout_n: int = 10
+    # Outcome checks (right customer, address, slot...) may not get worse by more than this many
+    # conversations, even when those conversations were already failing for other reasons.
+    max_outcome_regression: int = 1
 
 
 @dataclass
@@ -142,6 +145,20 @@ def decide(cmp: dict, flags: list[str] | None = None, t: Thresholds | None = Non
         }
     if held.delta_pp < 0:
         reasons.append(f"held-out success went down ({held.delta_pp:+} pp)")
+    fixed = len(train.fixed) + len(held.fixed)
+    broken_total = len(train.broken) + len(held.broken)
+    if broken_total > fixed:
+        reasons.append(
+            f"net harm: broke {broken_total} conversations that used to pass, fixed {fixed}"
+        )
+    from evalgate.graders import PROCESS_CHECKS
+
+    for name, v in cmp.get("check_failures", {}).items():
+        if name not in PROCESS_CHECKS and v["candidate"] - v["base"] > t.max_outcome_regression:
+            reasons.append(
+                f"outcome regression: {name} failed in {v['base']} -> "
+                f"{v['candidate']} conversations"
+            )
     safety = set(cmp["broken_categories"]) & SAFETY_CATEGORIES
     if safety:
         reasons.append(f"broke a safety-critical scenario ({', '.join(sorted(safety))})")
@@ -238,4 +255,18 @@ def compare_runs(
     decision = decide(cmp, proposal.flags if proposal else [], t)
     out = cand_dir / f"comparison-vs-{base_id}.md"
     out.write_text(render(cmp, decision, base_id, cand_id, proposal))
+    if proposal is not None:
+        # Remember the outcome so the Manager's next proposal can learn from it.
+        from dataclasses import asdict
+
+        proposal.gate_decision = decision["decision"]
+        proposal.gate_reasons = decision["reasons"]
+        proposal.candidate_run = str(cand_dir)
+        proposal.broken = cmp["train"].broken + cmp["heldout"].broken
+        proposal.regressions = {
+            k: [v["base"], v["candidate"]]
+            for k, v in cmp["check_failures"].items()
+            if v["candidate"] > v["base"]
+        }
+        (proposals_dir / f"{cand_id}.json").write_text(json.dumps(asdict(proposal), indent=1))
     return cmp, decision, out
