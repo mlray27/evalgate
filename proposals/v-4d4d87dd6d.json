@@ -1,0 +1,65 @@
+{
+ "action": "edit",
+ "sop_id": "booking-confirmation",
+ "new_text": "To book, first call propose_booking. Read the returned summary back to the caller in plain words: service, address, day, date, and window. Do not state that an appointment is scheduled or booked until the caller clearly agrees in their next message. Only after the caller agrees, call confirm_booking with the token. If the caller changes anything, call propose_booking again with the new details. If they decline, call decline_proposal.",
+ "rationale": "The dispatcher was using language implying a booking was already finalized before the confirm_booking tool was called, so the procedure now explicitly forbids stating an appointment is scheduled until after the confirmation step.",
+ "title": "",
+ "category": "general",
+ "priority": 3,
+ "check": "no_premature_confirmation",
+ "base_version": "v-4633ecf0f5",
+ "candidate_version": "v-4d4d87dd6d",
+ "example_ids": [
+  "correction_availability-01-r0",
+  "correction_availability-03-r0",
+  "correction_service-01-r0",
+  "emergency_no_heat-02-r0",
+  "emergency_no_heat-03-r0",
+  "multi_address-02-r0",
+  "multi_address-03-r0",
+  "new_customer-03-r0",
+  "pricing_then_book-01-r0",
+  "replacement_estimate-02-r0",
+  "standard_repair-02-r0",
+  "tool_fault-01-r0"
+ ],
+ "errors": [],
+ "flags": [],
+ "gate_decision": "reject",
+ "gate_reasons": [
+  "net harm: broke 8 conversations that used to pass, fixed 5",
+  "outcome regression: correct_address failed in 0 -> 8 conversations",
+  "outcome regression: correct_customer failed in 0 -> 8 conversations",
+  "outcome regression: correct_services failed in 2 -> 10 conversations",
+  "outcome regression: slot_fits_availability failed in 0 -> 8 conversations"
+ ],
+ "candidate_run": "runs\\20261122-004538-v-4d4d87dd6d",
+ "regressions": {
+  "correct_address": [
+   0,
+   8
+  ],
+  "correct_customer": [
+   0,
+   8
+  ],
+  "correct_services": [
+   2,
+   10
+  ],
+  "slot_fits_availability": [
+   0,
+   8
+  ]
+ },
+ "broken": [
+  "consent_withdrawn-01-r0",
+  "consent_withdrawn-02-r0",
+  "correction_service-03-r0",
+  "new_customer-01-r0",
+  "pricing_then_book-02-r0",
+  "two_problems-03-r0",
+  "correction_service-02-r0",
+  "correction_service-06-r0"
+ ]
+}
