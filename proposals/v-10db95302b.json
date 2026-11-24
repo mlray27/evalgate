@@ -1,0 +1,33 @@
+{
+ "action": "edit",
+ "sop_id": "booking-confirmation",
+ "new_text": "To book, first call propose_booking. Read the returned summary back to the caller in plain words: service, address, day, date, and window. Ask if this summary is correct and wait for the caller's clear agreement. Only after the caller agrees, call confirm_booking with the token. If the caller changes anything, call propose_booking again with the new details. If they decline, call decline_proposal.",
+ "rationale": "The previous instruction allowed the agent to state an appointment was 'scheduled' before the confirmation tool was called; this edit forces the agent to present the proposal as a draft for agreement before finalizing the booking.",
+ "title": "",
+ "category": "general",
+ "priority": 3,
+ "check": "no_premature_confirmation",
+ "base_version": "v-4633ecf0f5",
+ "candidate_version": "v-10db95302b",
+ "example_ids": [
+  "correction_availability-01-r0",
+  "correction_availability-03-r0",
+  "correction_service-01-r0",
+  "emergency_no_heat-02-r0",
+  "emergency_no_heat-03-r0",
+  "multi_address-02-r0",
+  "multi_address-03-r0",
+  "new_customer-03-r0",
+  "pricing_then_book-01-r0",
+  "replacement_estimate-02-r0",
+  "standard_repair-02-r0",
+  "tool_fault-01-r0"
+ ],
+ "errors": [],
+ "flags": [],
+ "gate_decision": "",
+ "gate_reasons": [],
+ "candidate_run": "",
+ "regressions": {},
+ "broken": []
+}
