@@ -150,3 +150,26 @@ async def test_read_tool_retries_after_timeout(sm, settings):
     ex = ToolExecutor(c, ToolFaults({"lookup_customer": ["timeout_before", None]}))
     out = await ex.run("lookup_customer", {"phone": "555-0101"})
     assert out.result["found"] and out.attempts == 2
+
+
+async def test_second_booking_for_a_different_service_stays_open(sm, settings):
+    """Regression: proposing a toilet repair after a boiler repair blocked the boiler confirm."""
+    c, boiler, _ = await stage(sm, settings, service=Service.BOILER_REPAIR)
+    slots = (await check_availability(c, CheckAvailabilityArgs(service=Service.TOILET_REPAIR)))[
+        "slots"
+    ]
+    toilet = (
+        await propose_booking(
+            c,
+            ProposeBookingArgs(
+                customer_id="C001",
+                address_id="A001",
+                slot_id=slots[0]["slot_id"],
+                service=Service.TOILET_REPAIR,
+            ),
+        )
+    )["token"]
+    c.state.turn_index += 1
+    assert (await confirm_booking(c, TokenArgs(token=boiler)))["ok"]
+    assert (await confirm_booking(c, TokenArgs(token=toilet)))["ok"]
+    assert await count_session_bookings(sm, "s1") == 2

@@ -317,9 +317,22 @@ async def add_address(ctx: ToolContext, a: AddAddressArgs) -> dict:
 # ---------------------------------------------------------------------------------------------
 
 
-def _supersede(state: SessionState, kind: str) -> None:
+def _supersede(state: SessionState, kind: str, details: dict) -> None:
+    """A new proposal replaces open ones for the same thing, not every open proposal.
+
+    Same booking = same service or same slot (the caller corrected something). A second booking
+    for a different service, like a furnace and a clogged drain in one call, stays open.
+    Same cancellation/reschedule = same appointment.
+    """
     for p in state.proposals.values():
-        if p.kind == kind and p.status == "open":
+        if p.kind != kind or p.status != "open":
+            continue
+        d = p.details
+        if kind == "booking":
+            same = d["service"] == details["service"] or d["slot_id"] == details["slot_id"]
+        else:
+            same = d["appointment_id"] == details["appointment_id"]
+        if same:
             p.status = "superseded"
 
 
@@ -361,7 +374,7 @@ async def propose_booking(ctx: ToolContext, a: ProposeBookingArgs) -> dict:
             f"{a.service.value.replace('_', ' ')} for {cust.name} at {_addr_str(addr)}, "
             f"{describe_slot(slot)}"
         )
-    _supersede(ctx.state, "booking")
+    _supersede(ctx.state, "booking", a.model_dump(mode="json"))
     token = ctx.state.new_token("booking")
     ctx.state.proposals[token] = Proposal(
         token=token,
@@ -385,7 +398,7 @@ async def propose_cancellation(ctx: ToolContext, a: ProposeCancellationArgs) -> 
             return _err("not_found", "No active appointment with that id. Use list_appointments.")
         slot = await s.get(Slot, appt.slot_id)
         summary = f"cancel the {appt.service.replace('_', ' ')} visit on {describe_slot(slot)}"
-    _supersede(ctx.state, "cancellation")
+    _supersede(ctx.state, "cancellation", a.model_dump())
     token = ctx.state.new_token("cancellation")
     ctx.state.proposals[token] = Proposal(
         token, "cancellation", a.model_dump(), summary, ctx.state.turn_index
@@ -413,7 +426,7 @@ async def propose_reschedule(ctx: ToolContext, a: ProposeRescheduleArgs) -> dict
             f"move the {appt.service.replace('_', ' ')} visit from {describe_slot(old)} "
             f"to {describe_slot(v[2])}"
         )
-    _supersede(ctx.state, "reschedule")
+    _supersede(ctx.state, "reschedule", a.model_dump())
     token = ctx.state.new_token("reschedule")
     ctx.state.proposals[token] = Proposal(
         token, "reschedule", a.model_dump(), summary, ctx.state.turn_index
